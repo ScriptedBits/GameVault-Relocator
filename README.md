@@ -26,3 +26,7 @@ No more manual file transfers or broken paths—**GameVault-Relocator keeps ever
 
 ### 📝 **Note:**  
 You can run this as a **Python script** or use the included **compiled `.exe`** for a seamless experience.  
+
+
+
+### Be sure to check out our other project Emulator Auto-Downloads at https://github.com/ScriptedBits/Emulator-Auto-downloads
