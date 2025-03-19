@@ -1,6 +1,6 @@
 ![GitHub release (latest by date)](https://img.shields.io/github/v/release/ScriptedBits/GameVault-Relocator)
-![GitHub All Releases](https://img.shields.io/github/downloads/ScriptedBits//GameVault-Relocator/total)
-![GitHub issues](https://img.shields.io/github/issues/ScriptedBits//GameVault-Relocator)
+![GitHub All Releases](https://img.shields.io/github/downloads/ScriptedBits/GameVault-Relocator/total)
+![GitHub issues](https://img.shields.io/github/issues/ScriptedBits/GameVault-Relocator)
 
 
 
