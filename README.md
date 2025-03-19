@@ -1,3 +1,9 @@
+![GitHub release (latest by date)](https://img.shields.io/github/v/release/ScriptedBits/GameVault-Relocator)
+![GitHub All Releases](https://img.shields.io/github/downloads/ScriptedBits//GameVault-Relocator/total)
+![GitHub issues](https://img.shields.io/github/issues/ScriptedBits//GameVault-Relocator)
+
+
+
 # 🚀 Introducing GameVault-Relocator! 🎮  
 
 We're excited to announce **[GameVault-Relocator](https://github.com/ScriptedBits/GameVault-Relocator/)** – a powerful tool designed to **seamlessly move directories** to a new destination **while automatically creating a symlink** for you!  
