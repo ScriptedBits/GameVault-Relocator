@@ -14,7 +14,7 @@ No more manual file transfers or broken paths—**GameVault-Relocator keeps ever
 ✔️ Simple, modern UI for an effortless experience.  
 
 ## 🎉 Get Started Today!  
-👉 **[Download & Try GameVault-Relocator](https://github.com/ScriptedBits/GameVault-Relocator/)**  
+👉 **[Download & Try GameVault-Relocator](https://github.com/ScriptedBits/GameVault-Relocator/releases)**  
 
 ---
 
