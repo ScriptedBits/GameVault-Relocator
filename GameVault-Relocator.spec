@@ -7,19 +7,22 @@ hidden_imports = collect_submodules('PyQt5')
 block_cipher = None
 
 a = Analysis(
-    ['GameVault-Relocator-1.2.py'],  # Your main script
+    ['GameVault-Relocator.py'],
     pathex=['.'],
     binaries=[],
-    datas=[],
+    datas=[
+        ('updater.exe', '.'),         # Include updater.exe
+        ('background.jpg', '.'),      # Include background.jpg in the root of the bundle
+    ],
     hiddenimports=hidden_imports,
     hookspath=[],
     runtime_hooks=[],
     excludes=[],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
-    noarchive=False,     # Whether to bundle everything into a single archive
+    noarchive=False,
     cipher=block_cipher,
-    optimize=0,          # Optimization level (0: none)
+    optimize=0,
 )
 
 pyz = PYZ(a.pure, cipher=block_cipher)
@@ -36,7 +39,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    runtime_tmpdir=None,  # Temporary directory
-    console=False,        # Hide console window (set to True for console apps)
-	version="version_info.rc",  # Embed version info in the .exe
+    runtime_tmpdir=None,
+    console=False,
+    version='version_info.rc',
 )

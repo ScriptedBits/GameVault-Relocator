@@ -43,16 +43,18 @@ import requests
 import json
 import tempfile
 import webbrowser
+import win32file
 from packaging import version
 from datetime import datetime
 
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QPushButton, QFileDialog, QLabel, 
-    QMessageBox, QCheckBox, QProgressBar, QComboBox, QTextEdit, QSpacerItem, QSizePolicy, QDialog, QProgressDialog
+    QMessageBox, QCheckBox, QProgressBar, QComboBox, QTextEdit, QSpacerItem, QSizePolicy, QDialog, QProgressDialog, QHBoxLayout
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt5.QtGui import QPixmap
 
-APP_VERSION = "1.5"
+APP_VERSION = "2.0"
 
 def check_for_updates():
     try:
@@ -245,8 +247,6 @@ def prompt_and_update(latest_version, asset_url):
         except Exception as e:
             QMessageBox.warning(None, "Update Failed", f"Failed to download or apply update:\n{e}")
 
-
-
 # Setup logging
 LOG_FILE = "GameVault-Relocator.log"
 logging.basicConfig(
@@ -295,6 +295,7 @@ class MoveThread(QThread):
     """Threaded class to move files and update progress"""
     progress = pyqtSignal(int)
     finished = pyqtSignal(str)
+    progress_summary = pyqtSignal(str)
 
     def __init__(self, source, destination, use_robocopy):
         super().__init__()
@@ -366,6 +367,7 @@ class MoveThread(QThread):
 
                         progress = int((moved_files / total_files) * 100) if total_files > 0 else 0
                         self.progress.emit(progress)
+                        self.progress_summary.emit(f"{moved_files}/{total_files} files moved...")
                         time.sleep(1)
 
                     process.wait()
@@ -394,6 +396,7 @@ class MoveThread(QThread):
                                 logging.error(f"Failed to move: {src_file}")
 
                             progress = int((moved_files / total_files) * 100)
+                            self.progress_summary.emit(f"{moved_files}/{total_files} files moved...")
                             self.progress.emit(progress)
 
                         # Remove empty directories after all files in them are moved
@@ -430,7 +433,7 @@ class MoveThread(QThread):
 
             self.progress.emit(100)
             self.finished.emit(f"Move completed to: {self.destination}")
-            logging.info(f"Move completed: {self.source} -> {self.destination}")
+            #logging.info(f"Move completed: {self.source} -> {self.destination}")
 
         except Exception as e:
             error_msg = f"Error: {str(e)}"
@@ -449,41 +452,66 @@ class SymlinkCheckerThread(QThread):
 
     def run(self):
         try:
-            self.status.emit("Scanning for symlinks... Please wait...")  # Show "Please wait" message
-
             process = subprocess.Popen(
                 f'dir {self.drive} /AL /S', shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
             )
 
             output_lines = []
-            for line in process.stdout:
-                if "<SYMLINK" in line and "JUNCTION" not in line:  # Only keep true symlinks, not junctions
-                    output_lines.append(line.strip())
-                    self.progress.emit("\n".join(output_lines))  # Show symlinks in real-time
+            current_dir = ""
 
+            for line in process.stdout:
+                line = line.strip()
+
+                # Track current directory from " Directory of ..." lines
+                if line.lower().startswith("directory of"):
+                    current_dir = line[13:].strip().lower()
+                    continue
+
+                if (
+                    "<SYMLINK" in line
+                    and "JUNCTION" not in line
+                    and "$recycle.bin" not in current_dir  # <- skip based on directory context
+                ):
+                    output_lines.append(line)
+                    self.progress.emit("\n".join(output_lines))
+
+            stderr = process.stderr.read()
             process.wait()
+
+            if process.returncode != 0 and "File Not Found" not in stderr:
+                logging.error(f"Symlink scan error (exit code {process.returncode}): {stderr}")
+                self.finished.emit(f"Error scanning symlinks:\n\n{stderr}")
+                return
+
             if not output_lines:
                 self.finished.emit("No symlinks found.")
             else:
                 self.finished.emit("\n".join(output_lines))
 
         except Exception as e:
-            self.finished.emit(f"Error: {str(e)}")
+            error_msg = f"Unexpected error in symlink checker: {str(e)}\n{traceback.format_exc()}"
+            logging.error(error_msg)
+            self.finished.emit(f"Error: {e}")
 
 class SymlinkMoverApp(QWidget):
     def __init__(self):
         super().__init__()
+        self.base_symlink_instruction = (
+            "To check for current symlinks, select a drive and click 'Check Symlinks'.<br>"
+            "<span style='color:#00ff88; font-style:italic;'>Note: This check can take some time on a large drive with many directories.</span>"
+        )
+
         self.source_path = None  # Initialize source path
         self.destination_path = None  # Initialize destination path
 
         self.setWindowTitle(f"GameVault-Relocator v{APP_VERSION}")  # Show version in title
-        self.setGeometry(100, 100, 750, 700)  # Set window size
+        self.setGeometry(100, 100, 750, 800)  # Set window size
         self.center_window()  # Center the window on the screen
 
         self.setStyleSheet(self.get_dark_theme())  # Apply Dark Theme
         self.layout = QVBoxLayout()
 
-        # Set button width (adjust as needed)
+        # Set button width
         button_width = 400
 
         # Labels for Source & Destination
@@ -491,6 +519,8 @@ class SymlinkMoverApp(QWidget):
         self.destination_label = QLabel("Destination Root Directory: Not Selected")
         self.layout.addWidget(self.source_label)
         self.layout.addWidget(self.destination_label)
+
+        self.layout.addSpacing(20)
 
         # Buttons for selecting source and destination
         self.select_source_btn = QPushButton("Select Source Directory")
@@ -513,6 +543,19 @@ class SymlinkMoverApp(QWidget):
         # Add spacing between the checkbox and "Start Move & Symlink" button
         self.layout.addSpacing(20)
 
+        # Create Symlink Only Button (Blue Color)
+        self.symlink_only_btn = QPushButton("Create Symlink Only (No Move)")
+        self.symlink_only_btn.setFixedSize(300, 30)
+        self.symlink_only_btn.setStyleSheet(
+            "QPushButton { background-color: #1e3a8a; color: white; font-weight: bold; border-radius: 5px; }"
+            "QPushButton:hover { background-color: #1d4ed8; }"
+        )
+
+        self.symlink_only_btn.clicked.connect(self.create_symlink_only)
+        self.layout.addWidget(self.symlink_only_btn, alignment=Qt.AlignCenter)
+
+        self.layout.addSpacing(20)
+
         # Start Button (Green Color)
         self.start_btn = QPushButton("Start Move - Create Symlink")
         self.start_btn.setFixedSize(button_width, 30)
@@ -528,6 +571,11 @@ class SymlinkMoverApp(QWidget):
         self.progress_bar.setAlignment(Qt.AlignCenter)
         self.layout.addWidget(self.progress_bar)
 
+        # Progress Summary Label
+        self.progress_summary_label = QLabel("")
+        self.progress_summary_label.setAlignment(Qt.AlignCenter)
+        self.layout.addWidget(self.progress_summary_label)
+
         # Progress Bar (Indeterminate Mode)
         self.scan_progress = QProgressBar()
         self.scan_progress.setAlignment(Qt.AlignCenter)
@@ -535,26 +583,48 @@ class SymlinkMoverApp(QWidget):
         self.scan_progress.hide()  # Hidden until scanning starts
         self.layout.addWidget(self.scan_progress)
 
-        # Instruction Label for Symlink Check
-        self.symlink_instruction = QLabel(
-            "To check for current symlinks, pick a drive and click 'Check'.\n"
-            "Note: This check can take some time on a large drive with many directories."
-        )
+        self.symlink_instruction = QLabel()
+        self.symlink_instruction.setTextFormat(Qt.RichText)
         self.symlink_instruction.setWordWrap(True)
-        self.layout.addWidget(self.symlink_instruction)
+        self.symlink_instruction.setAlignment(Qt.AlignCenter)
+        self.symlink_instruction.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.symlink_instruction.setMinimumWidth(700)
+        self.symlink_instruction.setText(self.base_symlink_instruction)
+        self.symlink_instruction.adjustSize()
+        self.layout.addWidget(self.symlink_instruction, alignment=Qt.AlignCenter)
+
+        # Set fixed width (match your layout width)
+        self.symlink_instruction.setMinimumWidth(700)
+
+        # Set the full text
+        self.symlink_instruction.setText(
+            "To check for current symlinks, select a drive and click 'Check Symlinks'.<br>"
+            "<span style='color:#00DD00; font-style:italic;'><b>Note:</b> This check can take some time on a large drive with many directories.</span>"
+        )
+
+        # Force height recalculation
+        self.symlink_instruction.adjustSize()
+
+        # Add to layout
+        self.layout.addWidget(self.symlink_instruction, alignment=Qt.AlignCenter)
+
 
         # Add spacing between these two elements
         self.layout.addSpacing(15)  # Adjust number for more/less space
 
         # Status Label for Live Updates
         self.scan_status_label = QLabel("Select a drive and click 'Check Symlinks'.")
-        self.layout.addWidget(self.scan_status_label)
-
+        self.layout.addWidget(self.scan_status_label, alignment=Qt.AlignCenter)
+        
+        self.layout.addSpacing(15)
+        
         # Drive Selection for Symlink Checking
         self.drive_selection = QComboBox()
         self.drive_selection.addItems(self.get_available_drives())
         self.layout.addWidget(self.drive_selection, alignment=Qt.AlignCenter)
 
+        self.layout.addSpacing(15)
+        
         # Button to Check Symlinks
         self.check_symlinks_btn = QPushButton("Check for Symlinks")
         self.check_symlinks_btn.setFixedSize(button_width, 30)
@@ -569,60 +639,227 @@ class SymlinkMoverApp(QWidget):
         # Add spacing before the Exit button for better UI spacing
         self.layout.addSpacing(20)
 
-        # Info Button
+        # Button Row Layout
+        info_log_row = QHBoxLayout()
+
+        # --- Button Row Layout for Info, Help, and Log ---
+        button_row = QHBoxLayout()
+
+        # Create all buttons with identical widths
         self.info_btn = QPushButton("Info")
         self.info_btn.setFixedSize(150, 30)
         self.info_btn.clicked.connect(self.show_info_popup)
-        self.layout.addWidget(self.info_btn, alignment=Qt.AlignCenter)
+
+        self.help_btn = QPushButton("Help")
+        self.help_btn.setFixedSize(150, 30)
+        self.help_btn.clicked.connect(self.show_help_popup)
+
+        self.view_log_btn = QPushButton("View Log")
+        self.view_log_btn.setFixedSize(150, 30)
+        self.view_log_btn.clicked.connect(self.show_log_viewer)
+
+        # Add all buttons to the row with spacing
+        button_row.addStretch(1)
+        button_row.addWidget(self.info_btn)
+        button_row.addSpacing(10)
+        button_row.addWidget(self.help_btn)
+        button_row.addSpacing(10)
+        button_row.addWidget(self.view_log_btn)
+        button_row.addStretch(1)
+
+        # Add to main layout
+        self.layout.addLayout(button_row)
         self.layout.addSpacing(20)
+        
         # Exit Button
         self.exit_btn = QPushButton("Exit")
-        self.exit_btn.setFixedSize(150, 30)  # Set a smaller width
-        self.exit_btn.clicked.connect(self.close)  # Close the app when clicked
+        self.exit_btn.setFixedSize(150, 30)
+        self.exit_btn.clicked.connect(self.close)
         self.layout.addWidget(self.exit_btn, alignment=Qt.AlignCenter)
 
         self.setLayout(self.layout)
+        
+    def show_help_popup(self):
+        help_text = r"""
+        <h2 style='color: #61afef;'>How to Use GameVault-Relocator</h2>
+        <ol style='color: white; font-size: 11pt;'>
+        <li><b>Select Source Directory:</b><br>Pick the folder you want to move and create a symlink for.</li><br>
+        <li><b>Select Destination Root Drive:</b><br>This is where your files will be moved to.<br>For example R:\emulators\rpcs3\games would move to S:\emulators\rpcs3\games. The destination will use the same directory structure as the source directory. Example #2 R:\LaunchBox\Games\Sega Dreamcast with a destination of S:\ would be written as S:\Launchbox\Games\Sega Dreamcast</li><br>
+        <li><b>Choose 'Start Move - Create Symlink':</b><br>The app will move files and create a symbolic link at the source (original) location.</li><br>
+        <li><b>Or use 'Create Symlink Only (No Move)':</b><br>Use this if you already moved the files manually and just want to link them back.</li><br>
+        <li><b>Check for Symlinks:</b><br>Select a drive and click 'Check for Symlinks' to view all current symbolic links on a drive.</li><br>
+        <li><b>View Logs:</b><br>Click 'View Log' to see all actions taken and errors (if any).</li><br>
+        </ol>
+        <p style='color:#98c379;'>💡 Tip: This tool requires administrator rights to create symlinks on Windows.</p>
+        """
+
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Help & Examples")
+        dialog.resize(750, 550)
+
+        layout = QVBoxLayout()
+        label = QLabel(help_text)
+        label.setOpenExternalLinks(True)
+        label.setWordWrap(True)
+        label.setTextFormat(Qt.RichText)
+        label.setStyleSheet("color: white;")
+        layout.addWidget(label)
+
+        ok_button = QPushButton("Close")
+        ok_button.clicked.connect(dialog.accept)
+        layout.addWidget(ok_button, alignment=Qt.AlignCenter)
+
+        dialog.setLayout(layout)
+        dialog.exec_()
+  
+    def show_log_viewer(self):
+        log_path = LOG_FILE
+        if not os.path.exists(log_path):
+            QMessageBox.warning(self, "Log Not Found", "The log file does not exist.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Log Viewer")
+        dialog.resize(700, 500)
+
+        layout = QVBoxLayout()
+        text_edit = QTextEdit()
+        text_edit.setReadOnly(True)
+
+        with open(log_path, 'r', encoding='utf-8') as f:
+            text_edit.setText(f.read())
+
+        layout.addWidget(text_edit)
+
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignRight)
+
+        dialog.setLayout(layout)
+        dialog.exec_()
+    
+    def create_symlink_only(self):
+        if not self.source_path or not self.destination_path:
+            QMessageBox.warning(self, "Missing Paths", "Please select both source and destination directories first.")
+            return
+
+        source_drive, source_relative_path = os.path.splitdrive(self.source_path)
+        source_relative_path = source_relative_path.lstrip("\\")
+        destination_final_path = os.path.join(self.destination_path, source_relative_path)
+
+        # Ensure destination exists (but we’re not copying files)
+        os.makedirs(destination_final_path, exist_ok=True)
+
+        if os.path.exists(self.source_path):
+            try:
+                shutil.rmtree(self.source_path)
+                logging.info(f"Removed original source: {self.source_path} before symlink-only operation.")
+            except Exception as e:
+                logging.error(f"Failed to remove source for symlink-only: {e}")
+                QMessageBox.critical(self, "Error", f"Could not remove original source folder:\n{e}")
+                return
+
+        # Create symlink
+        try:
+            if IS_WINDOWS:
+                cmd = f'mklink /D "{self.source_path}" "{destination_final_path}"'
+            else:
+                cmd = f'ln -s "{destination_final_path}" "{self.source_path}"'
+
+            result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            if result.returncode == 0:
+                logging.info(f"Symlink (only) created: {self.source_path} → {destination_final_path}")
+                QMessageBox.information(self, "Symlink Created", f"Symlink created:\n\n{self.source_path} → {destination_final_path}")
+            else:
+                raise RuntimeError(result.stderr)
+
+        except Exception as e:
+            logging.error(f"Symlink-only creation failed: {e}")
+            QMessageBox.critical(self, "Symlink Error", f"Could not create symlink:\n{e}")
      
     def show_info_popup(self):
-        """Displays an information pop-up with project details."""
         dialog = QDialog(self)
         dialog.setWindowTitle("About GameVault-Relocator")
-        dialog.setFixedSize(850, 550)  # Increased height for better spacing
+        dialog.setFixedSize(850, 550)
 
-        # Updated Info text with custom link colors
+        def get_resource_path(filename):
+            if hasattr(sys, '_MEIPASS'):
+                return os.path.join(sys._MEIPASS, filename)
+            return os.path.join(os.path.abspath("."), filename)
+
+        background_path = get_resource_path("background.jpg")
+
+        # Main container layout
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Create background QLabel and load scaled image
+        bg_label = QLabel(dialog)
+        pixmap = QPixmap(background_path).scaled(
+            dialog.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+        )
+        bg_label.setPixmap(pixmap)
+        bg_label.setGeometry(0, 0, dialog.width(), dialog.height())
+        bg_label.lower()
+
+        # Overlay widget for semi-transparent content
+        overlay = QWidget(dialog)
+        overlay.setGeometry(0, 0, dialog.width(), dialog.height())
+        overlay.setStyleSheet("background-color: rgba(0, 0, 0, 180);")
+
+        # Overlay layout with info text
+        overlay_layout = QVBoxLayout(overlay)
+        overlay_layout.setContentsMargins(40, 40, 40, 40)
+        overlay_layout.setSpacing(20)
+
         info_text = (
-            f"<h2>GameVault-Relocator v{APP_VERSION}</h2>"
-            "<p><b>Created by:</b> ScriptedBits</p>"
-            "<p>GameVault-Relocator is a passion project designed to save time by automating moving folders "
+            f"<h2 style='color: #61afef;'>GameVault-Relocator v{APP_VERSION}</h2>"
+            "<p><b style='color:#98c379;'>Created by:</b> ScriptedBits</p>"
+            "<p style='color:white;'>GameVault-Relocator is a passion project designed to save time by automating moving folders "
             "to another storage device or drive and creating a symlink to the source drive.</p>"
-            '<p><b>Project URL:</b><br> <a href="https://github.com/ScriptedBits/GameVault-Relocator" '
-            'style="color:#61afef; text-decoration:none;">'
+            '<p style="color:#ffffff;"><b>Project URL:</b><br>'
+            '<a href="https://github.com/ScriptedBits/GameVault-Relocator" style="color:#00ffff;">'
             "https://github.com/ScriptedBits/GameVault-Relocator</a></p>"
-            "<p><b>Please check out our other Retro Gaming projects at:</b></p>"
-            '<p><a href="https://github.com/ScriptedBits/" '
-            'style="color:#61afef; text-decoration:none;">'
+            '<p style="color:#ffffff;"><b>Other Projects:</b><br>'
+            '<a href="https://github.com/ScriptedBits/" style="color:#00ffff;">'
             "https://github.com/ScriptedBits/</a></p>"
         )
 
-        # Create layout for the dialog
-        layout = QVBoxLayout()
+        info_label = QLabel(info_text)
+        info_label.setOpenExternalLinks(True)
+        info_label.setTextFormat(Qt.RichText)
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("font-size: 11pt;")
+        overlay_layout.addWidget(info_label)
 
-        # Create and set the label with rich text
-        label = QLabel(info_text)
-        label.setOpenExternalLinks(True)  # Allow clickable links
-        label.setWordWrap(True)
-        layout.addWidget(label)
-
-        # OK Button to close the dialog
+        # OK Button
         ok_button = QPushButton("OK")
         ok_button.setFixedSize(100, 30)
-        ok_button.clicked.connect(dialog.accept)  # Close the dialog when clicked
-        layout.addWidget(ok_button, alignment=Qt.AlignCenter)
+        ok_button.setStyleSheet("""
+            QPushButton {
+                background-color: #00ffff;
+                color: #000000;
+                font-weight: bold;
+                border-radius: 5px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background-color: #00b3b3;
+            }
+        """)
+        ok_button.clicked.connect(dialog.accept)
+        overlay_layout.addWidget(ok_button, alignment=Qt.AlignCenter)
 
-        # Apply layout and show the dialog
-        dialog.setLayout(layout)
         dialog.exec_()
-     
+
+    def get_resource_path(filename):
+        """ Get absolute path to resource, works for dev and for PyInstaller """
+        if hasattr(sys, '_MEIPASS'):
+            return os.path.join(sys._MEIPASS, filename)
+        return os.path.join(os.path.abspath("."), filename)
+
     def center_window(self):
             """Centers the window on the screen."""
             frame_geometry = self.frameGeometry()
@@ -646,28 +883,65 @@ class SymlinkMoverApp(QWidget):
         if not self.source_path or not self.destination_path:
             QMessageBox.warning(self, "Error", "Please select both source and destination directories.")
             return
+        # Clear previous progress summary
+        self.progress_summary_label.setText("")
+        # Estimate source size
+        def get_folder_size(path):
+            total = 0
+            for root, _, files in os.walk(path):
+                for f in files:
+                    fp = os.path.join(root, f)
+                    if os.path.exists(fp):
+                        total += os.path.getsize(fp)
+            return total
 
-        # Extract relative path from source
+        def get_free_space(path):
+            _, _, free = shutil.disk_usage(path)
+            return free
+
+        try:
+            estimated_source_size = get_folder_size(self.source_path)
+            destination_free = get_free_space(self.destination_path)
+
+            # 🚨 Compare sizes
+            if destination_free < estimated_source_size:
+                source_gb = round(estimated_source_size / (1024**3), 2)
+                dest_gb = round(destination_free / (1024**3), 2)
+                QMessageBox.critical(
+                    self,
+                    "Insufficient Space",
+                    f"The destination drive does not have enough free space.\n\n"
+                    f"Estimated size of source: {source_gb} GB\n"
+                    f"Available space on destination: {dest_gb} GB\n\n"
+                    "Please free up space or choose another destination."
+                )
+                return
+        except Exception as e:
+            logging.error(f"Drive space check failed: {e}")
+            QMessageBox.warning(self, "Drive Space Check Failed", f"Could not verify available space:\n{e}")
+            return
+
+        # If space is good, continue with original logic
         source_drive, source_relative_path = os.path.splitdrive(self.source_path)
-        source_relative_path = source_relative_path.lstrip("\\")  # Remove leading backslash if present
+        source_relative_path = source_relative_path.lstrip("\\")  # Remove leading backslash
 
-        # Create the full path in the destination
         destination_final_path = os.path.join(self.destination_path, source_relative_path)
-
-        # Ensure the full directory structure exists
         os.makedirs(destination_final_path, exist_ok=True)
 
         self.progress_bar.setValue(0)
         self.worker = MoveThread(self.source_path, destination_final_path, self.use_robocopy_checkbox.isChecked())
         self.worker.progress.connect(self.progress_bar.setValue)
         self.worker.finished.connect(self.on_move_finished)
+        self.worker.progress_summary.connect(self.progress_summary_label.setText)
+
         self.worker.start()
-        
+
     def on_move_finished(self, message):
         """Handles actions after the move operation is completed."""
         QMessageBox.information(self, "Process Complete", message)
-        logging.info(f"Move finished: {message}")
-
+        #logging.info(f"Move finished: {message}")
+        # Clear the progress summary label
+        self.progress_summary_label.setText("")
         # Extract relative path from source
         source_drive, source_relative_path = os.path.splitdrive(self.source_path)
         source_relative_path = source_relative_path.lstrip("\\")
@@ -726,14 +1000,30 @@ class SymlinkMoverApp(QWidget):
             )
 
     def get_available_drives(self):
-        return [f"{d}:\\" for d in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if os.path.exists(f"{d}:\\")]
+        drives = []
+        for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+            drive = f"{letter}:\\"
+            try:
+                drive_type = win32file.GetDriveType(drive)
+                if os.path.exists(drive):
+                    if drive_type == win32file.DRIVE_REMOTE:
+                        drives.append(f"{drive} (Network)")
+                    elif drive_type == win32file.DRIVE_FIXED:
+                        drives.append(drive)
+            except Exception as e:
+                logging.warning(f"Skipping drive {drive}: {e}")
+        return drives
 
     def start_symlink_check(self):
         selected_drive = self.drive_selection.currentText()
         self.symlink_results.setText("Scanning for symlinks...\nPlease wait...")
-        self.scan_status_label.setText(f"Scanning {selected_drive}...")  # Show live scan message
-        self.check_symlinks_btn.setEnabled(False)  # Disable button while scanning
-        self.scan_progress.show()  # Show progress bar
+        self.symlink_instruction.setText(
+            self.base_symlink_instruction +
+            f"<br><br><span style='color: #61afef;'>Scanning <b>{selected_drive}</b> for symlinks...</span>"
+        )
+
+        self.check_symlinks_btn.setEnabled(False)
+        self.scan_progress.show()
 
         # Start the background thread for checking symlinks
         self.worker = SymlinkCheckerThread(selected_drive)
@@ -743,10 +1033,14 @@ class SymlinkMoverApp(QWidget):
         self.worker.start()
 
     def on_symlink_check_finished(self, result):
+        self.symlink_instruction.setText(
+            self.base_symlink_instruction +
+            "<br><br><span style='color: #28a745; font-weight: bold;'>✔ Scan complete!</span>"
+        )
+
         self.symlink_results.setText(result)
-        self.scan_status_label.setText("Scan complete!")  # Show completion message
-        self.scan_progress.hide()  # Hide progress bar
-        self.check_symlinks_btn.setEnabled(True)  # Re-enable button
+        self.scan_progress.hide()
+        self.check_symlinks_btn.setEnabled(True)
 
     def get_dark_theme(self):
         return """
@@ -793,5 +1087,3 @@ if __name__ == "__main__":
     window.show()
     check_for_updates()  # optional here, or triggered from init
     sys.exit(app.exec_())
-
-
