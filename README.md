@@ -3,6 +3,8 @@
 ![GitHub issues](https://img.shields.io/github/issues/ScriptedBits/GameVault-Relocator)
 
 
+![Latest Release Downloads](https://img.shields.io/github/downloads/ScriptedBits/GameVault-Relocator/latest/total)
+
 
 # 🚀 Introducing GameVault-Relocator! 🎮  
 
