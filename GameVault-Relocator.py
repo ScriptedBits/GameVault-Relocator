@@ -54,7 +54,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QPixmap
 
-APP_VERSION = "2.0"
+APP_VERSION = "2.1.2"
 
 def check_for_updates():
     try:
@@ -255,8 +255,6 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-logging.info("GameVault-Relocator started")
-
 # Detect OS type
 IS_WINDOWS = platform.system() == "Windows"
 IS_LINUX = platform.system() == "Linux"
@@ -291,53 +289,58 @@ if not is_admin():
 
     sys.exit()  # Exit the non-admin process after relaunch
 
+def get_robocopy_thread_count():
+    try:
+        return min(os.cpu_count() or 4, 32)  # Cap at 32 threads
+    except:
+        return 4
+
 class MoveThread(QThread):
-    """Threaded class to move files and update progress"""
     progress = pyqtSignal(int)
     finished = pyqtSignal(str)
     progress_summary = pyqtSignal(str)
 
-    def __init__(self, source, destination, use_robocopy):
+    def __init__(self, source, destination, use_robocopy, preview_mode=False):
         super().__init__()
         self.source = source
         self.destination = destination
         self.use_robocopy = use_robocopy
+        self.preview_mode = preview_mode
+        self._stop_requested = False
+        self.robocopy_process = None
+        self.rsync_process = None
 
     def count_total_files(self, path):
-        """Counts total files recursively in the source directory."""
         total_files = sum(len(files) for _, _, files in os.walk(path))
         return total_files
 
     def move_with_retries(self, src, dest, retries=5, delay=2):
-        """Move a file with retries if it's in use."""
         for attempt in range(1, retries + 1):
             try:
                 shutil.move(src, dest)
                 logging.info(f"Moved: {src} -> {dest}")
-                return True  # Success
+                return True
             except PermissionError:
                 logging.warning(f"Attempt {attempt}: File in use - {src}")
                 time.sleep(delay)
             except Exception as e:
                 logging.error(f"Error moving file {src}: {e}")
                 return False
-        return False  # If all retries fail
+        return False
 
     def remove_empty_dirs(self, path, retries=3, delay=2):
-        """Recursively remove empty directories with retry logic."""
         for attempt in range(1, retries + 1):
             try:
                 for root, dirs, _ in os.walk(path, topdown=False):
                     for dir in dirs:
                         dir_path = os.path.join(root, dir)
-                        if not os.listdir(dir_path):  # If empty, remove
+                        if not os.listdir(dir_path):
                             os.rmdir(dir_path)
                             logging.info(f"Removed empty dir: {dir_path}")
                 return True
             except Exception as e:
                 logging.warning(f"Attempt {attempt}: Failed to remove empty dirs in {path}: {e}")
                 time.sleep(delay)
-        
         logging.error(f"Final attempt failed: Could not remove {path}")
         return False
 
@@ -349,96 +352,206 @@ class MoveThread(QThread):
                 self.finished.emit("No files found in source directory.")
                 return
 
-            moved_files = 0  # Counter for progress tracking
+            moved_files = 0
+            skipped_files = 0
+            failed_files = 0
+            start_time = time.time()
+            total_bytes_moved = 0
+            warnings = []
+        
+            if hasattr(self, 'preview_mode') and self.preview_mode:
+                logging.info("Preview mode enabled — no files will be moved.")
+                self.finished.emit(
+                    f"[Preview Mode] Would move {total_files} files from:\n{self.source}\nto\n{self.destination}\n"
+                    f"Total size: {round(sum(os.path.getsize(os.path.join(root, f)) for root, _, files in os.walk(self.source) for f in files) / (1024 ** 3), 2)} GB"
+                )
+                return
+
+            if getattr(sys, 'frozen', False):
+                log_dir = os.path.dirname(sys.executable)
+            else:
+                log_dir = os.path.abspath(".")
+
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            log_file = os.path.join(log_dir, f"{'robocopy' if self.use_robocopy else 'move'}_{timestamp}.log")
 
             if IS_WINDOWS:
                 if self.use_robocopy:
-                    # Use Robocopy for Windows
-                    log_file = os.path.join(os.path.dirname(self.destination), "robocopy.log")
-                    robocopy_command = [
-                        "robocopy", self.source, self.destination, "/E", "/MOVE", "/NP", "/R:3", "/W:2", "/LOG:" + log_file
-                    ]
-                    process = subprocess.Popen(robocopy_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
+                    if self.preview_mode:
+                        logging.warning("Preview mode is not supported with Robocopy. Falling back to native Python transfer.")
+                        self.use_robocopy = False  # fallback
+                        return  # Prevent falling through to native move block
+                    else:
+                        # Proceed with Robocopy as usual
+                        thread_count = get_robocopy_thread_count()
+                        logging.info(f"Using Robocopy with {thread_count} threads")
 
-                    while process.poll() is None:
-                        if os.path.exists(log_file):
-                            with open(log_file, "r", encoding="utf-8") as f:
-                                moved_files = sum(1 for line in f if "New File" in line or "Moved" in line)
+                        robocopy_command = [
+                            "robocopy", self.source, self.destination,
+                            "/E", "/MOVE", "/NP", "/R:3", "/W:2",
+                            f"/MT:{thread_count}",
+                            "/LOG:" + log_file
+                        ]
+
+                        self.robocopy_process = subprocess.Popen(
+                            robocopy_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True
+                        )
+                    
+                    while self.robocopy_process.poll() is None:
+                        if self._stop_requested:
+                            self.robocopy_process.terminate()
+                            logging.info("Robocopy Transfer canceled by user request.")
+                            self.finished.emit("Transfer canceled by user.")
+                            return
+
+                        try:
+                            with open(log_file, "r", encoding="mbcs", errors="replace") as f:
+                                moved_files = 0
+                                skipped_files = 0
+                                failed_files = 0
+
+                                for line in f:
+                                    if "New File" in line or "Moved" in line:
+                                        moved_files += 1
+                                    elif "Skipped" in line:
+                                        skipped_files += 1
+                                    elif "EXTRA File" in line or "Access is denied" in line or "ERROR" in line:
+                                        failed_files += 1
+                        except Exception as e:
+                            logging.warning(f"Could not read Robocopy log during progress check: {e}")
 
                         progress = int((moved_files / total_files) * 100) if total_files > 0 else 0
                         self.progress.emit(progress)
-                        self.progress_summary.emit(f"{moved_files}/{total_files} files moved...")
+                        self.progress_summary.emit(f"{moved_files}/{total_files} files moved... (Robocopy)")
                         time.sleep(1)
 
-                    process.wait()
-                    if process.returncode >= 8:
+                    if self._stop_requested:
+                        logging.info("Transfer canceled by user request.")
+                        self.finished.emit("Transfer canceled by user.")
+                        return
+
+                    if self.robocopy_process.returncode >= 8:
                         self.finished.emit(f"Robocopy failed: See log file at {log_file}")
                         logging.error(f"Robocopy failed: {log_file}")
                         return
 
-                    if os.path.exists(self.source):
-                        os.system(f'rmdir /S /Q "{self.source}"')
-
-                    if os.path.exists(log_file):
-                        os.remove(log_file)
+                    if not self._stop_requested and os.path.exists(self.source):
+                        has_files = any(
+                            os.path.isfile(os.path.join(root, file))
+                            for root, _, files in os.walk(self.source)
+                            for file in files
+                        )
+                        if not has_files:
+                            if IS_WINDOWS:
+                                os.system(f'rmdir /S /Q "{self.source}"')
+                            else:
+                                shutil.rmtree(self.source, ignore_errors=True)
+                            logging.info(f"Source directory removed: {self.source}")
+                        else:
+                            logging.warning(f"Skipped removing source directory — files still exist: {self.source}")
 
                 else:
-                    # Use Native Windows Move (shutil.move)
                     for root, dirs, files in os.walk(self.source, topdown=False):
                         for file in files:
+                            if self._stop_requested:
+                                self.finished.emit("Transfer canceled by user.")
+                                return
+
                             src_file = os.path.join(root, file)
                             dest_file = src_file.replace(self.source, self.destination, 1)
                             os.makedirs(os.path.dirname(dest_file), exist_ok=True)
 
-                            if self.move_with_retries(src_file, dest_file):
-                                moved_files += 1
-                            else:
-                                logging.error(f"Failed to move: {src_file}")
+                            try:
+                                if self.preview_mode:
+                                    log_line = f"[PREVIEW] Would move: {src_file} -> {dest_file}\n"
+                                    with open(log_file, 'a', encoding='utf-8') as log_f:
+                                        log_f.write(log_line)
+                                    moved_files += 1
+                                    total_bytes_moved += os.path.getsize(src_file)
+                                    continue
+   
+                                try:
+                                    file_size = os.path.getsize(src_file)  # Get size BEFORE move
+                                except Exception as e:
+                                    file_size = 0
+                                    logging.warning(f"Could not get size of {src_file}: {e}")
+
+                                if self.move_with_retries(src_file, dest_file):
+                                    moved_files += 1
+                                    total_bytes_moved += file_size
+                                    with open(log_file, 'a', encoding='utf-8') as log_f:
+                                        log_f.write(f"Moved: {src_file} -> {dest_file}\n")
+                                else:
+                                    failed_files += 1
+                                    warnings.append(f"Failed to move: {src_file}")
+  
+                            except Exception as e:
+                                failed_files += 1
+                                warnings.append(str(e))
+                                logging.error(f"Exception during move: {e}")
 
                             progress = int((moved_files / total_files) * 100)
-                            self.progress_summary.emit(f"{moved_files}/{total_files} files moved...")
+                            self.progress_summary.emit(
+                                f"{moved_files}/{total_files} files {'previewed' if self.preview_mode else 'moved'}"
+                            )
                             self.progress.emit(progress)
 
-                        # Remove empty directories after all files in them are moved
-                        for dir in dirs:
-                            dir_path = os.path.join(root, dir)
-                            try:
-                                os.rmdir(dir_path)  # Only removes if empty
-                                logging.info(f"Removed empty dir: {dir_path}")
-                            except OSError:
-                                logging.warning(f"Could not remove dir: {dir_path}")
+                    if self._stop_requested:
+                        self.finished.emit("Transfer canceled by user.")
+                        return
 
-                    # Final cleanup of remaining empty dirs
                     if not self.remove_empty_dirs(self.source):
                         logging.error(f"Manual deletion required for: {self.source}")
-                        os.system(f'rmdir /S /Q "{self.source}"')  # Last resort
+                        if IS_WINDOWS:
+                            os.system(f'rmdir /S /Q "{self.source}"')
+                        else:
+                            shutil.rmtree(self.source, ignore_errors=True)
 
             elif IS_LINUX or IS_MAC:
-                # Use rsync for Linux/macOS
                 rsync_command = [
                     "rsync", "-a", "--remove-source-files", self.source + "/", self.destination + "/"
                 ]
-                process = subprocess.Popen(
+                self.rsync_process = subprocess.Popen(
                     rsync_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
                 )
 
-                while process.poll() is None:
+                while self.rsync_process.poll() is None:
+                    if self._stop_requested:
+                        self.rsync_process.terminate()
+                        self.finished.emit("Transfer canceled by user.")
+                        return
+
                     moved_files = self.count_total_files(self.destination)
                     progress = int((moved_files / total_files) * 100) if total_files > 0 else 0
                     self.progress.emit(progress)
                     time.sleep(1)
 
-                # Remove empty directories after rsync completes
                 subprocess.run(["find", self.source, "-type", "d", "-empty", "-delete"], check=False)
 
-            self.progress.emit(100)
-            self.finished.emit(f"Move completed to: {self.destination}")
-            #logging.info(f"Move completed: {self.source} -> {self.destination}")
+            elapsed_time = time.time() - start_time
+            moved_gb = total_bytes_moved / (1024 ** 3)
 
+            self.progress.emit(100)
+            self.finished.emit(
+                f"{'Preview' if self.preview_mode else 'Move'} completed to: {self.destination}\n"
+                f"Files {'previewed' if self.preview_mode else 'moved'}: {moved_files}, "
+                f"Skipped: {skipped_files}, Failed: {failed_files}\n"
+                f"Total GB: {moved_gb:.2f}, Time Taken: {elapsed_time:.2f} seconds\n"
+                f"Warnings/Errors: {len(warnings)}\n"
+                f"Log saved to: {log_file}"
+            )
         except Exception as e:
             error_msg = f"Error: {str(e)}"
             self.finished.emit(error_msg)
             logging.error(error_msg)
+
+    def stop(self):
+        self._stop_requested = True
+        if self.robocopy_process and self.robocopy_process.poll() is None:
+            self.robocopy_process.terminate()
+        if self.rsync_process and self.rsync_process.poll() is None:
+            self.rsync_process.terminate()
+
 
 class SymlinkCheckerThread(QThread):
     """Threaded class for checking symlinks on a selected drive"""
@@ -452,9 +565,25 @@ class SymlinkCheckerThread(QThread):
 
     def run(self):
         try:
-            process = subprocess.Popen(
-                f'dir {self.drive} /AL /S', shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-            )
+            if IS_WINDOWS:
+                drive_clean = self.drive.split()[0].rstrip("\\/")
+                drive_quoted = f'"{drive_clean}\\"' 
+                logging.info(f"Starting symlink scan on drive: {drive_quoted}")
+                process = subprocess.Popen(
+                    f'dir {drive_quoted} /AL /S',
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                logging.debug(f"Running symlink scan command: dir {drive_clean} /AL /S")
+
+            else:
+                # On Linux/macOS, use `find` to locate symlinks (fallback approach)
+                process = subprocess.Popen(
+                    ["find", self.drive, "-type", "l"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                )
 
             output_lines = []
             current_dir = ""
@@ -484,8 +613,12 @@ class SymlinkCheckerThread(QThread):
                 return
 
             if not output_lines:
+                logging.info(f"No symlinks found on {self.drive}")
                 self.finished.emit("No symlinks found.")
             else:
+                logging.info(f"Found {len(output_lines)} symlinks on {self.drive}")
+                for entry in output_lines:
+                    logging.info(f"  Symlink: {entry}")
                 self.finished.emit("\n".join(output_lines))
 
         except Exception as e:
@@ -500,6 +633,7 @@ class SymlinkMoverApp(QWidget):
             "To check for current symlinks, select a drive and click 'Check Symlinks'.<br>"
             "<span style='color:#00ff88; font-style:italic;'>Note: This check can take some time on a large drive with many directories.</span>"
         )
+        self.transfer_canceled = False
 
         self.source_path = None  # Initialize source path
         self.destination_path = None  # Initialize destination path
@@ -565,6 +699,20 @@ class SymlinkMoverApp(QWidget):
         )
         self.start_btn.clicked.connect(self.start_process)
         self.layout.addWidget(self.start_btn, alignment=Qt.AlignCenter)
+        
+        self.preview_checkbox = QCheckBox("Preview Only (Dry Run – no changes)")
+        self.layout.addWidget(self.preview_checkbox, alignment=Qt.AlignCenter)
+
+        # Stop Button (Red) - initially hidden
+        self.stop_btn = QPushButton("Cancel Transfer")
+        self.stop_btn.setFixedSize(button_width, 30)
+        self.stop_btn.setStyleSheet(
+            "QPushButton { background-color: #dc3545; color: white; font-weight: bold; border-radius: 5px; }"
+            "QPushButton:hover { background-color: #c82333; }"
+        )
+        self.stop_btn.clicked.connect(self.cancel_transfer)
+        self.stop_btn.hide()
+        self.layout.addWidget(self.stop_btn, alignment=Qt.AlignCenter)
 
         # Progress Bar
         self.progress_bar = QProgressBar()
@@ -678,7 +826,22 @@ class SymlinkMoverApp(QWidget):
         self.layout.addWidget(self.exit_btn, alignment=Qt.AlignCenter)
 
         self.setLayout(self.layout)
-        
+      
+    def cancel_transfer(self):
+        if hasattr(self, 'worker') and self.worker.isRunning():
+            self.transfer_canceled = True  # Mark as canceled
+            self.worker._stop_requested = True
+            self.stop_btn.setEnabled(False)
+            self.stop_btn.setText("Cancelling...")
+
+            if hasattr(self.worker, 'robocopy_process') and self.worker.robocopy_process:
+                try:
+                    self.worker.robocopy_process.terminate()
+                    logging.info("Robocopy process terminated by user.")
+                except Exception as e:
+                    logging.warning(f"Failed to terminate Robocopy: {e}")
+
+      
     def show_help_popup(self):
         help_text = r"""
         <h2 style='color: #61afef;'>How to Use GameVault-Relocator</h2>
@@ -727,18 +890,50 @@ class SymlinkMoverApp(QWidget):
         text_edit = QTextEdit()
         text_edit.setReadOnly(True)
 
-        with open(log_path, 'r', encoding='utf-8') as f:
+        with open(log_path, 'r', encoding='mbcs', errors='replace') as f:
             text_edit.setText(f.read())
 
         layout.addWidget(text_edit)
 
+        # Buttons row
+        button_layout = QHBoxLayout()
+
+        clear_button = QPushButton("Clear Log")
+        clear_button.setFixedSize(100, 30)
+        clear_button.setStyleSheet("background-color: #dc3545; color: white; font-weight: bold;")
+
         close_button = QPushButton("Close")
+        close_button.setFixedSize(100, 30)
+
+        def clear_log():
+            reply = QMessageBox.question(
+                self,
+                "Confirm Clear Log",
+                "Are you sure you want to clear the log file?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                try:
+                    open(log_path, 'w').close()
+                    text_edit.setText("")  # Clear display
+                    logging.info("Log file cleared by user.")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Could not clear log file:\n{e}")
+
+        clear_button.clicked.connect(clear_log)
         close_button.clicked.connect(dialog.accept)
-        layout.addWidget(close_button, alignment=Qt.AlignRight)
+
+        button_layout.addStretch()
+        button_layout.addWidget(clear_button)
+        button_layout.addSpacing(10)
+        button_layout.addWidget(close_button)
+        button_layout.addStretch()
+
+        layout.addLayout(button_layout)
 
         dialog.setLayout(layout)
         dialog.exec_()
-    
+
     def create_symlink_only(self):
         if not self.source_path or not self.destination_path:
             QMessageBox.warning(self, "Missing Paths", "Please select both source and destination directories first.")
@@ -926,22 +1121,52 @@ class SymlinkMoverApp(QWidget):
         source_relative_path = source_relative_path.lstrip("\\")  # Remove leading backslash
 
         destination_final_path = os.path.join(self.destination_path, source_relative_path)
-        os.makedirs(destination_final_path, exist_ok=True)
+        # Only create the destination dir if it's not a dry run
+        if not self.preview_checkbox.isChecked():
+            os.makedirs(destination_final_path, exist_ok=True)
 
         self.progress_bar.setValue(0)
-        self.worker = MoveThread(self.source_path, destination_final_path, self.use_robocopy_checkbox.isChecked())
+        self.worker = MoveThread(
+            self.source_path,
+            destination_final_path,
+            self.use_robocopy_checkbox.isChecked(),
+            self.preview_checkbox.isChecked()
+        )
         self.worker.progress.connect(self.progress_bar.setValue)
         self.worker.finished.connect(self.on_move_finished)
         self.worker.progress_summary.connect(self.progress_summary_label.setText)
 
         self.worker.start()
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.preview_checkbox.setEnabled(False)
+        self.stop_btn.setText("Cancel Transfer")
+        self.stop_btn.show()
 
     def on_move_finished(self, message):
-        """Handles actions after the move operation is completed."""
-        QMessageBox.information(self, "Process Complete", message)
-        #logging.info(f"Move finished: {message}")
+        # logging.info(f"Move finished: {message}")
+        # Hide and reset the Cancel button
+        self.stop_btn.hide()
+        self.stop_btn.setEnabled(True)
+        self.preview_checkbox.setEnabled(True)
+        self.stop_btn.setText("Cancel Transfer")
         # Clear the progress summary label
         self.progress_summary_label.setText("")
+        self.start_btn.setEnabled(True)
+        
+        QMessageBox.information(self, "Process Complete", message)
+        
+        # Skip symlink creation if user canceled
+        if self.transfer_canceled:
+            logging.info("Transfer was canceled. Skipping symlink creation.")
+            self.transfer_canceled = False
+            return
+
+        # Preview mode check should be here
+        if hasattr(self, 'preview_checkbox') and self.preview_checkbox.isChecked():
+            logging.info("Preview mode enabled — skipping symlink creation.")
+            return
+
         # Extract relative path from source
         source_drive, source_relative_path = os.path.splitdrive(self.source_path)
         source_relative_path = source_relative_path.lstrip("\\")
@@ -978,6 +1203,11 @@ class SymlinkMoverApp(QWidget):
 
             if result.returncode == 0:
                 logging.info(f"Symlink successfully created: {self.source_path} -> {destination_final_path}")
+                if os.path.islink(self.source_path):
+                    logging.info("Symlink verified.")
+                else:
+                    logging.warning("Symlink creation reported success but was not verified.")
+                    
                 QMessageBox.information(
                     self, "Symlink Created",
                     f"A symbolic link has been successfully created:\n\n"
@@ -998,20 +1228,38 @@ class SymlinkMoverApp(QWidget):
                 self, "Symlink Creation Error",
                 f"An unexpected error occurred while creating the symlink:\n\n{str(e)}"
             )
-
+    
     def get_available_drives(self):
         drives = []
-        for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
-            drive = f"{letter}:\\"
+        
+        if IS_WINDOWS:
+            for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+                drive = f"{letter}:/"
+                try:
+                    drive_type = win32file.GetDriveType(drive)
+                    if os.path.exists(drive):
+                        if drive_type == win32file.DRIVE_REMOTE:
+                            drives.append(f"{drive} (Network)")
+                        elif drive_type == win32file.DRIVE_FIXED:
+                            drives.append(drive)
+                except Exception as e:
+                    logging.warning(f"Skipping drive {drive}: {e}")
+        else:
             try:
-                drive_type = win32file.GetDriveType(drive)
-                if os.path.exists(drive):
-                    if drive_type == win32file.DRIVE_REMOTE:
-                        drives.append(f"{drive} (Network)")
-                    elif drive_type == win32file.DRIVE_FIXED:
-                        drives.append(drive)
+                import psutil
+                partitions = psutil.disk_partitions(all=False)
+                for p in partitions:
+                    if os.path.ismount(p.mountpoint) and p.fstype:
+                        drives.append(p.mountpoint)
             except Exception as e:
-                logging.warning(f"Skipping drive {drive}: {e}")
+                logging.warning(f"Fallback: Could not list drives with psutil: {e}")
+                # Fallback directories if psutil fails
+                for base in ["/mnt", "/media", "/Volumes"]:
+                    if os.path.exists(base):
+                        for item in os.listdir(base):
+                            full_path = os.path.join(base, item)
+                            if os.path.ismount(full_path):
+                                drives.append(full_path)
         return drives
 
     def start_symlink_check(self):
@@ -1085,5 +1333,6 @@ if __name__ == "__main__":
     app.setStyle("Fusion")
     window = SymlinkMoverApp()
     window.show()
+    logging.info("GameVault-Relocator GUI initialized and ready.")
     check_for_updates()  # optional here, or triggered from init
     sys.exit(app.exec_())
