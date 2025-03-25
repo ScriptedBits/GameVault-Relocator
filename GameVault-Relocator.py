@@ -393,9 +393,19 @@ class MoveThread(QThread):
                             "/LOG:" + log_file
                         ]
 
+                        # Add startupinfo to hide the Robocopy console window
+                        si = subprocess.STARTUPINFO()
+                        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                        si.wShowWindow = subprocess.SW_HIDE  # Hides the command prompt window
+
                         self.robocopy_process = subprocess.Popen(
-                            robocopy_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True
+                            robocopy_command,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            text=True,
+                            startupinfo=si  #  This hides the Robocopy window
                         )
+
                     
                     while self.robocopy_process.poll() is None:
                         if self._stop_requested:
