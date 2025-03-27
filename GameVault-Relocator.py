@@ -55,7 +55,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QPixmap
 
-APP_VERSION = "2.1.3"
+APP_VERSION = "2.1.4"
 
 def check_for_updates():
     try:
@@ -80,7 +80,10 @@ def check_for_updates():
 
         if version.parse(latest_version) > version.parse(APP_VERSION) and asset_url:
             logging.info(f"Update available: {APP_VERSION} → {latest_version}")
-            app_version_date = datetime.strptime("2025-03-01", "%Y-%m-%d")  # Adjust if needed
+            if getattr(sys, 'frozen', False):
+                app_version_date = datetime.fromtimestamp(os.path.getmtime(sys.executable))
+            else:
+                app_version_date = datetime.fromtimestamp(os.path.getmtime(__file__))
             days_between = (release_date - app_version_date).days
 
             reply = QMessageBox.question(
@@ -129,8 +132,6 @@ def check_for_updates():
 
                 logging.info("Download complete. Launching updater script.")
 
-                # Pass current PyInstaller temp folder path
-                _mei_dir = getattr(sys, '_MEIPASS', None)
                 run_updater_script(new_exe_path)
 
         elif not asset_url:
