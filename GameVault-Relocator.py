@@ -44,6 +44,7 @@ import json
 import tempfile
 import webbrowser
 import win32file
+import traceback
 from packaging import version
 from datetime import datetime
 
@@ -54,7 +55,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QPixmap
 
-APP_VERSION = "2.1.2"
+APP_VERSION = "2.1.3"
 
 def check_for_updates():
     try:
@@ -180,8 +181,9 @@ def download_and_replace_exe(asset_url, latest_version, parent=None):
                         return
 
         logging.info("Download complete. Launching updater script.")
-
-        QTimer.singleShot(100, lambda: run_updater_script(new_exe_path, _mei_dir))
+        
+        #QTimer.singleShot(100, lambda: run_updater_script(new_exe_path, _mei_dir))
+        QTimer.singleShot(100, lambda: run_updater_script(new_exe_path))
         QApplication.quit()  # this will trigger the shutdown gracefully
 
     except Exception as e:
@@ -198,6 +200,9 @@ def run_updater_script(new_exe_path):
         # Get MEIPASS directory where updater.exe is bundled
         bundle_dir = getattr(sys, '_MEIPASS', os.path.dirname(__file__))
         bundled_updater_path = os.path.join(bundle_dir, updater_filename)
+
+        if not os.path.exists(bundled_updater_path):
+            raise FileNotFoundError(f"Missing bundled updater: {bundled_updater_path}")
 
         # Copy updater.exe to a clean temp path
         shutil.copyfile(bundled_updater_path, extracted_updater_path)
@@ -217,37 +222,6 @@ def run_updater_script(new_exe_path):
         logging.exception("Failed to launch updater.")
         QMessageBox.critical(None, "Update Error", f"Could not launch updater:\n{e}")
 
-def prompt_and_update(latest_version, asset_url):
-    reply = QMessageBox.question(
-        None,
-        "Update Available",
-        f"A new version is available:\n\n"
-        f"Current version: {APP_VERSION}\n"
-        f"Latest version: {latest_version}\n\n"
-        "Would you like to download and install the update now?",
-        QMessageBox.Yes | QMessageBox.No
-    )
-
-    if reply == QMessageBox.Yes:
-        try:
-            # Create a temp directory to store the downloaded file
-            temp_dir = tempfile.gettempdir()
-            new_exe_path = os.path.join(temp_dir, f"GameVault-Relocator-{latest_version}.exe")
-
-            # Download the new .exe
-            response = requests.get(asset_url, stream=True)
-            total_size = int(response.headers.get("content-length", 0))
-            with open(new_exe_path, 'wb') as f:
-                for chunk in response.iter_content(1024 * 1024):
-                    f.write(chunk)
-
-            # Launch updater helper script to replace the current executable
-            run_updater(new_exe_path)
-
-        except Exception as e:
-            QMessageBox.warning(None, "Update Failed", f"Failed to download or apply update:\n{e}")
-
-# Setup logging
 LOG_FILE = "GameVault-Relocator.log"
 logging.basicConfig(
     filename=LOG_FILE,
@@ -265,7 +239,8 @@ def is_admin():
     if IS_WINDOWS:
         try:
             return ctypes.windll.shell32.IsUserAnAdmin()
-        except:
+        except Exception as e:
+            logging.error(f"Error checking admin privileges: {e}")
             return False
     else:
         return os.geteuid() == 0  # Linux/macOS check for root user
@@ -855,17 +830,33 @@ class SymlinkMoverApp(QWidget):
     def show_help_popup(self):
         help_text = r"""
         <h2 style='color: #61afef;'>How to Use GameVault-Relocator</h2>
+
+        <!-- Section 1: Core Usage -->
         <ol style='color: white; font-size: 11pt;'>
         <li><b>Select Source Directory:</b><br>Pick the folder you want to move and create a symlink for.</li><br>
-        <li><b>Select Destination Root Drive:</b><br>This is where your files will be moved to.<br>For example R:\emulators\rpcs3\games would move to S:\emulators\rpcs3\games. The destination will use the same directory structure as the source directory. Example #2 R:\LaunchBox\Games\Sega Dreamcast with a destination of S:\ would be written as S:\Launchbox\Games\Sega Dreamcast</li><br>
-        <li><b>Choose 'Start Move - Create Symlink':</b><br>The app will move files and create a symbolic link at the source (original) location.</li><br>
+        <li><b>Select Destination Root Drive:</b><br>This is where your files will be moved to.<br>
+        For example R:\emulators\rpcs3\games would move to S:\emulators\rpcs3\games. The destination will use the same directory structure as the source directory. 
+        Example #2: R:\LaunchBox\Games\Sega Dreamcast → S:\Launchbox\Games\Sega Dreamcast</li><br>
+        <li><b>Choose 'Start Move - Create Symlink':</b><br>The app will move files and create a symbolic link at the original source location.</li><br>
         <li><b>Or use 'Create Symlink Only (No Move)':</b><br>Use this if you already moved the files manually and just want to link them back.</li><br>
         <li><b>Check for Symlinks:</b><br>Select a drive and click 'Check for Symlinks' to view all current symbolic links on a drive.</li><br>
         <li><b>View Logs:</b><br>Click 'View Log' to see all actions taken and errors (if any).</li><br>
         </ol>
+
+        <!-- Separator -->
+        <hr style='border: 1px solid #61afef; margin: 10px 0;'>
+
+        <!-- Title for update instructions -->
+        <h3 style='color: #00ffff;'>🛠 To Update on Linux / macOS</h3>
+
+        <!-- Section 2: Linux/Mac Updater -->
+        <ol start="1" style='color: white; font-size: 11pt;'>
+        <li><b>Make Updater Executable:</b><br><code>chmod +x update.sh</code></li><br>
+        <li><b>Run the Updater:</b><br><code>./update.sh /tmp/GameVault-Relocator-v2.1.3 /usr/local/bin/GameVault-Relocator</code></li><br>
+        </ol>
+
         <p style='color:#98c379;'>💡 Tip: This tool requires administrator rights to create symlinks on Windows.</p>
         """
-
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Help & Examples")
