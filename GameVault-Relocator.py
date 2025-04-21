@@ -55,7 +55,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QPixmap
 
-APP_VERSION = "2.1.4"
+APP_VERSION = "2.1.5"
 
 def check_for_updates():
     try:
@@ -665,7 +665,7 @@ class SymlinkMoverApp(QWidget):
 
         # Create Symlink Only Button (Blue Color)
         self.symlink_only_btn = QPushButton("Create Symlink Only (No Move)")
-        self.symlink_only_btn.setFixedSize(300, 30)
+        self.symlink_only_btn.setFixedSize(330, 30)
         self.symlink_only_btn.setStyleSheet(
             "QPushButton { background-color: #1e3a8a; color: white; font-weight: bold; border-radius: 5px; }"
             "QPushButton:hover { background-color: #1d4ed8; }"
