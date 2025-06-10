@@ -1,8 +1,8 @@
 # version_info.txt
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(2, 1, 4, 0),
-    prodvers=(2, 1, 4, 0),
+    filevers=(2, 1, 6, 0),
+    prodvers=(2, 1, 6, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x4,
@@ -22,8 +22,8 @@ VSVersionInfo(
             StringStruct(u'OriginalFilename', u'GameVault-Relocator.exe'),
 			StringStruct(u'InternalName', u'GameVault-Relocator'),
             StringStruct(u'ProductName', u'GameVault-Relocator'),
-            StringStruct(u'ProductVersion', u'2.1.4'),
-            StringStruct(u'FileVersion', u'2.1.4')
+            StringStruct(u'ProductVersion', u'2.1.6'),
+            StringStruct(u'FileVersion', u'2.1.6')
           ]
         )
       ]

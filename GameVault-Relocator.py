@@ -19,7 +19,7 @@
    ===========================================================================================
                           GameVault-Relocator
    ===========================================================================================
-	This script will allow you to move folders to a new drive or location and create a symlink
+    This script will allow you to move folders to a new drive or location and create a symlink
     from the source directory
 
     GitHub Repository: https://github.com/ScriptedBits/GameVault-Relocator
@@ -30,7 +30,6 @@
     For any support or issues, Please visit the github respository
     ==========================================================================================
 """
-import pkgutil
 import sys
 import os
 import shutil
@@ -40,7 +39,6 @@ import time
 import platform
 import logging
 import requests
-import json
 import tempfile
 import webbrowser
 import win32file
@@ -55,7 +53,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QPixmap
 
-APP_VERSION = "2.1.5"
+APP_VERSION = "2.1.6"
 
 def check_for_updates():
     try:
@@ -69,7 +67,6 @@ def check_for_updates():
         release_date_str = release_data["published_at"]
         release_date = datetime.strptime(release_date_str, "%Y-%m-%dT%H:%M:%SZ")
 
-        # Find .exe asset in release
         asset_url = None
         for asset in release_data.get("assets", []):
             if asset["name"].endswith(".exe"):
@@ -131,7 +128,6 @@ def check_for_updates():
                                 return
 
                 logging.info("Download complete. Launching updater script.")
-
                 run_updater_script(new_exe_path)
 
         elif not asset_url:
@@ -183,9 +179,8 @@ def download_and_replace_exe(asset_url, latest_version, parent=None):
 
         logging.info("Download complete. Launching updater script.")
         
-        #QTimer.singleShot(100, lambda: run_updater_script(new_exe_path, _mei_dir))
         QTimer.singleShot(100, lambda: run_updater_script(new_exe_path))
-        QApplication.quit()  # this will trigger the shutdown gracefully
+        QApplication.quit()
 
     except Exception as e:
         logging.error(f"Download or install failed: {e}")
@@ -198,18 +193,15 @@ def run_updater_script(new_exe_path):
     extracted_updater_path = os.path.join(temp_dir, updater_filename)
 
     try:
-        # Get MEIPASS directory where updater.exe is bundled
         bundle_dir = getattr(sys, '_MEIPASS', os.path.dirname(__file__))
         bundled_updater_path = os.path.join(bundle_dir, updater_filename)
 
         if not os.path.exists(bundled_updater_path):
             raise FileNotFoundError(f"Missing bundled updater: {bundled_updater_path}")
 
-        # Copy updater.exe to a clean temp path
         shutil.copyfile(bundled_updater_path, extracted_updater_path)
         logging.info(f"Copied updater to: {extracted_updater_path}")
 
-        # Launch the updater with paths as args
         subprocess.Popen(
             [extracted_updater_path, new_exe_path, current_exe],
             shell=False,
@@ -230,13 +222,11 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# Detect OS type
 IS_WINDOWS = platform.system() == "Windows"
 IS_LINUX = platform.system() == "Linux"
 IS_MAC = platform.system() == "Darwin"
 
 def is_admin():
-    """Check if the script is running with administrator/root privileges."""
     if IS_WINDOWS:
         try:
             return ctypes.windll.shell32.IsUserAnAdmin()
@@ -244,30 +234,27 @@ def is_admin():
             logging.error(f"Error checking admin privileges: {e}")
             return False
     else:
-        return os.geteuid() == 0  # Linux/macOS check for root user
+        return os.geteuid() == 0
 
-# Relaunch with admin/root rights if needed
 if not is_admin():
     try:
         if IS_WINDOWS:
-            # Relaunch with admin privileges using ShellExecuteW
             script = sys.executable
             params = " ".join(f'"{arg}"' for arg in sys.argv)
             ctypes.windll.shell32.ShellExecuteW(None, "runas", script, params, None, 1)
         else:
-            # Linux/macOS: Relaunch with sudo
-            script = sys.argv[0]  # Get the current script path
-            params = " ".join(f'"{arg}"' for arg in sys.argv[1:])  # Pass original arguments
-            subprocess.run(["sudo", sys.executable, script, *sys.argv[1:]], check=True)
+            script = sys.argv[0]
+            params = " ".join(f'"{arg}"' for arg in sys.argv[1:])
+            subprocess.run(["sudo", sys.executable, script] + sys.argv[1:], check=True)
 
     except Exception as e:
         sys.exit(f"Failed to elevate to admin/root: {str(e)}")
 
-    sys.exit()  # Exit the non-admin process after relaunch
+    sys.exit()
 
 def get_robocopy_thread_count():
     try:
-        return min(os.cpu_count() or 4, 32)  # Cap at 32 threads
+        return min(os.cpu_count() or 4, 32)
     except:
         return 4
 
@@ -355,10 +342,9 @@ class MoveThread(QThread):
                 if self.use_robocopy:
                     if self.preview_mode:
                         logging.warning("Preview mode is not supported with Robocopy. Falling back to native Python transfer.")
-                        self.use_robocopy = False  # fallback
-                        return  # Prevent falling through to native move block
+                        self.use_robocopy = False
+                        return
                     else:
-                        # Proceed with Robocopy as usual
                         thread_count = get_robocopy_thread_count()
                         logging.info(f"Using Robocopy with {thread_count} threads")
 
@@ -369,72 +355,70 @@ class MoveThread(QThread):
                             "/LOG:" + log_file
                         ]
 
-                        # Add startupinfo to hide the Robocopy console window
                         si = subprocess.STARTUPINFO()
                         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                        si.wShowWindow = subprocess.SW_HIDE  # Hides the command prompt window
+                        si.wShowWindow = subprocess.SW_HIDE
 
                         self.robocopy_process = subprocess.Popen(
                             robocopy_command,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
                             text=True,
-                            startupinfo=si  #  This hides the Robocopy window
+                            startupinfo=si
                         )
 
-                    
-                    while self.robocopy_process.poll() is None:
+                        while self.robocopy_process.poll() is None:
+                            if self._stop_requested:
+                                self.robocopy_process.terminate()
+                                logging.info("Robocopy Transfer canceled by user request.")
+                                self.finished.emit("Transfer canceled by user.")
+                                return
+
+                            try:
+                                with open(log_file, "r", encoding="mbcs", errors="replace") as f:
+                                    moved_files = 0
+                                    skipped_files = 0
+                                    failed_files = 0
+
+                                    for line in f:
+                                        if "New File" in line or "Moved" in line:
+                                            moved_files += 1
+                                        elif "Skipped" in line:
+                                            skipped_files += 1
+                                        elif "EXTRA File" in line or "Access is denied" in line or "ERROR" in line:
+                                            failed_files += 1
+                            except Exception as e:
+                                logging.warning(f"Could not read Robocopy log during progress check: {e}")
+
+                            progress = int((moved_files / total_files) * 100) if total_files > 0 else 0
+                            self.progress.emit(progress)
+                            self.progress_summary.emit(f"{moved_files}/{total_files} files moved... (Robocopy)")
+                            time.sleep(1)
+
                         if self._stop_requested:
-                            self.robocopy_process.terminate()
-                            logging.info("Robocopy Transfer canceled by user request.")
+                            logging.info("Transfer canceled by user request.")
                             self.finished.emit("Transfer canceled by user.")
                             return
 
-                        try:
-                            with open(log_file, "r", encoding="mbcs", errors="replace") as f:
-                                moved_files = 0
-                                skipped_files = 0
-                                failed_files = 0
+                        if self.robocopy_process.returncode >= 8:
+                            self.finished.emit(f"Robocopy failed: See log file at {log_file}")
+                            logging.error(f"Robocopy failed: {log_file}")
+                            return
 
-                                for line in f:
-                                    if "New File" in line or "Moved" in line:
-                                        moved_files += 1
-                                    elif "Skipped" in line:
-                                        skipped_files += 1
-                                    elif "EXTRA File" in line or "Access is denied" in line or "ERROR" in line:
-                                        failed_files += 1
-                        except Exception as e:
-                            logging.warning(f"Could not read Robocopy log during progress check: {e}")
-
-                        progress = int((moved_files / total_files) * 100) if total_files > 0 else 0
-                        self.progress.emit(progress)
-                        self.progress_summary.emit(f"{moved_files}/{total_files} files moved... (Robocopy)")
-                        time.sleep(1)
-
-                    if self._stop_requested:
-                        logging.info("Transfer canceled by user request.")
-                        self.finished.emit("Transfer canceled by user.")
-                        return
-
-                    if self.robocopy_process.returncode >= 8:
-                        self.finished.emit(f"Robocopy failed: See log file at {log_file}")
-                        logging.error(f"Robocopy failed: {log_file}")
-                        return
-
-                    if not self._stop_requested and os.path.exists(self.source):
-                        has_files = any(
-                            os.path.isfile(os.path.join(root, file))
-                            for root, _, files in os.walk(self.source)
-                            for file in files
-                        )
-                        if not has_files:
-                            if IS_WINDOWS:
-                                os.system(f'rmdir /S /Q "{self.source}"')
+                        if not self._stop_requested and os.path.exists(self.source):
+                            has_files = any(
+                                os.path.isfile(os.path.join(root, file))
+                                for root, _, files in os.walk(self.source)
+                                for file in files
+                            )
+                            if not has_files:
+                                if IS_WINDOWS:
+                                    os.system(f'rmdir /S /Q "{self.source}"')
+                                else:
+                                    shutil.rmtree(self.source, ignore_errors=True)
+                                logging.info(f"Source directory removed: {self.source}")
                             else:
-                                shutil.rmtree(self.source, ignore_errors=True)
-                            logging.info(f"Source directory removed: {self.source}")
-                        else:
-                            logging.warning(f"Skipped removing source directory — files still exist: {self.source}")
+                                logging.warning(f"Skipped removing source directory — files still exist: {self.source}")
 
                 else:
                     for root, dirs, files in os.walk(self.source, topdown=False):
@@ -457,7 +441,7 @@ class MoveThread(QThread):
                                     continue
    
                                 try:
-                                    file_size = os.path.getsize(src_file)  # Get size BEFORE move
+                                    file_size = os.path.getsize(src_file)
                                 except Exception as e:
                                     file_size = 0
                                     logging.warning(f"Could not get size of {src_file}: {e}")
@@ -538,73 +522,143 @@ class MoveThread(QThread):
         if self.rsync_process and self.rsync_process.poll() is None:
             self.rsync_process.terminate()
 
-
 class SymlinkCheckerThread(QThread):
-    """Threaded class for checking symlinks on a selected drive"""
-    progress = pyqtSignal(str)  # Emits real-time progress updates
-    status = pyqtSignal(str)  # Updates status message
-    finished = pyqtSignal(str)  # Emits final results
+    progress = pyqtSignal(str)
+    status = pyqtSignal(str)
+    finished = pyqtSignal(str)
 
-    def __init__(self, drive):
+    def __init__(self, path):
         super().__init__()
-        self.drive = drive
+        self.path = path
+        self.excluded_dirs = {
+            '$Recycle.Bin', '$RECYCLE.BIN', 'System Volume Information',
+            'proc', '/proc', 'sys', '/sys', '/dev', 'dev', '/tmp', 'tmp'
+        }
 
     def run(self):
         try:
+            output_lines = []
+            logging.info(f"Starting symlink scan on path: {self.path}")
+
             if IS_WINDOWS:
-                drive_clean = self.drive.split()[0].rstrip("\\/")
-                drive_quoted = f'"{drive_clean}\\"' 
-                logging.info(f"Starting symlink scan on drive: {drive_quoted}")
+                path_clean = self.path.rstrip('\\/')
+                path_quoted = f'"{path_clean}\\"'
+                cmd = f'dir {path_quoted} /AL /S /B'
                 process = subprocess.Popen(
-                    f'dir {drive_quoted} /AL /S',
+                    cmd,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding='utf-8',
+                    errors='ignore'
+                )
+
+                for line in process.stdout:
+                    line = line.strip()
+                    if not line:
+                        continue
+
+                    if any(excluded_dir.lower() in line.lower() for excluded_dir in self.excluded_dirs):
+                        continue
+
+                    try:
+                        target = os.readlink(line)
+                        # Remove \\?\ prefix if present
+                        if target.startswith(r"\\?\\") or target.startswith("\\\\?\\"):
+                            target = target[4:]
+                        symlink_info = f"{line} -> {target}"
+                    except OSError:
+                        symlink_info = f"{line} -> (broken)"
+                    output_lines.append(symlink_info)
+                    logging.info(f"Found symlink: {symlink_info}")
+                    self.progress.emit("\n".join(output_lines))
+
+                stderr = process.stderr.read()
+                process.wait()
+
+                if process.returncode != 0 and "File Not Found" not in stderr:
+                    logging.error(f"Symlink scan error (exit code {process.returncode}): {stderr}")
+                    self.finished.emit(f"Error scanning symlinks:\n\n{stderr}")
+                    return
+
+            else:
+                exclude_paths = ' '.join(f'-not -path "*/{d}/*"' for d in self.excluded_dirs if d.startswith('/'))
+                cmd = f'find "{self.path}" -type l {exclude_paths}'
+                process = subprocess.Popen(
+                    cmd,
                     shell=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True
                 )
-                logging.debug(f"Running symlink scan command: dir {drive_clean} /AL /S")
 
-            else:
-                # On Linux/macOS, use `find` to locate symlinks (fallback approach)
-                process = subprocess.Popen(
-                    ["find", self.drive, "-type", "l"],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-                )
+                for line in process.stdout:
+                    line = line.strip()
+                    if not line:
+                        continue
 
-            output_lines = []
-            current_dir = ""
+                    if any(d in line for d in self.excluded_dirs):
+                        continue
 
-            for line in process.stdout:
-                line = line.strip()
-
-                # Track current directory from " Directory of ..." lines
-                if line.lower().startswith("directory of"):
-                    current_dir = line[13:].strip().lower()
-                    continue
-
-                if (
-                    "<SYMLINK" in line
-                    and "JUNCTION" not in line
-                    and "$recycle.bin" not in current_dir  # <- skip based on directory context
-                ):
-                    output_lines.append(line)
+                    try:
+                        target = os.readlink(line)
+                        symlink_info = f"{line} -> {target}"
+                    except OSError:
+                        symlink_info = f"{line} -> (broken)"
+                    output_lines.append(symlink_info)
+                    logging.info(f"Found symlink: {symlink_info}")
                     self.progress.emit("\n".join(output_lines))
 
-            stderr = process.stderr.read()
-            process.wait()
+                stderr = process.stderr.read()
+                process.wait()
 
-            if process.returncode != 0 and "File Not Found" not in stderr:
-                logging.error(f"Symlink scan error (exit code {process.returncode}): {stderr}")
-                self.finished.emit(f"Error scanning symlinks:\n\n{stderr}")
-                return
+                if process.returncode != 0 and "No such file or directory" not in stderr:
+                    logging.error(f"Symlink scan error (exit code {process.returncode}): {stderr}")
+                    self.finished.emit(f"Error scanning symlinks:\n\n{stderr}")
+                    return
+
+            if len(output_lines) == 0:
+                logging.info("Falling back to Python-based symlink scan")
+                for root, dirs, files in os.walk(self.path, followlinks=False):
+                    if any(excluded_dir in root for excluded_dir in self.excluded_dirs):
+                        continue
+
+                    for dir_name in dirs:
+                        dir_path = os.path.join(root, dir_name)
+                        if os.path.islink(dir_path):
+                            try:
+                                target = os.readlink(dir_path)
+                                # Remove \\?\ prefix if present (for Windows compatibility)
+                                if IS_WINDOWS and target.startswith(r"\\?\\") or target.startswith("\\\\?\\"):
+                                    target = target[4:]
+                                symlink_info = f"{dir_path} -> {target}"
+                            except OSError:
+                                symlink_info = f"{dir_path} -> (broken)"
+                            output_lines.append(symlink_info)
+                            logging.info(f"Found symlink: {symlink_info}")
+                            self.progress.emit("\n".join(output_lines))
+
+                    for file_name in files:
+                        file_path = os.path.join(root, file_name)
+                        if os.path.islink(file_path):
+                            try:
+                                target = os.readlink(file_path)
+                                # Remove \\?\ prefix if present (for Windows compatibility)
+                                if IS_WINDOWS and target.startswith(r"\\?\\") or target.startswith("\\\\?\\"):
+                                    target = target[4:]
+                                symlink_info = f"{file_path} -> {target}"
+                            except OSError:
+                                symlink_info = f"{file_path} -> (broken)"
+                            output_lines.append(symlink_info)
+                            logging.info(f"Found symlink: {symlink_info}")
+                            self.progress.emit("\n".join(output_lines))
 
             if not output_lines:
-                logging.info(f"No symlinks found on {self.drive}")
+                logging.info(f"No symlinks found in {self.path}")
                 self.finished.emit("No symlinks found.")
             else:
-                logging.info(f"Found {len(output_lines)} symlinks on {self.drive}")
-                for entry in output_lines:
-                    logging.info(f"  Symlink: {entry}")
+                logging.info(f"Found {len(output_lines)} symlinks in {self.path}")
                 self.finished.emit("\n".join(output_lines))
 
         except Exception as e:
@@ -616,25 +670,22 @@ class SymlinkMoverApp(QWidget):
     def __init__(self):
         super().__init__()
         self.base_symlink_instruction = (
-            "To check for current symlinks, select a drive and click 'Check Symlinks'.<br>"
-            "<span style='color:#00ff88; font-style:italic;'>Note: This check can take some time on a large drive with many directories.</span>"
+            "To check for current symlinks, select a drive or folder and click 'Check Symlinks'.<br>"
+            "<span style='color:#00ff88; font-style:italic;'>Note: This check can take some time on a large drive or folder with many directories.</span>"
         )
         self.transfer_canceled = False
+        self.source_path = None
+        self.destination_path = None
 
-        self.source_path = None  # Initialize source path
-        self.destination_path = None  # Initialize destination path
+        self.setWindowTitle(f"GameVault-Relocator v{APP_VERSION}")
+        self.setGeometry(100, 100, 750, 800)
+        self.center_window()
 
-        self.setWindowTitle(f"GameVault-Relocator v{APP_VERSION}")  # Show version in title
-        self.setGeometry(100, 100, 750, 800)  # Set window size
-        self.center_window()  # Center the window on the screen
-
-        self.setStyleSheet(self.get_dark_theme())  # Apply Dark Theme
+        self.setStyleSheet(self.get_dark_theme())
         self.layout = QVBoxLayout()
 
-        # Set button width
         button_width = 400
 
-        # Labels for Source & Destination
         self.source_label = QLabel("Source Directory: Not Selected")
         self.destination_label = QLabel("Destination Root Directory: Not Selected")
         self.layout.addWidget(self.source_label)
@@ -642,9 +693,8 @@ class SymlinkMoverApp(QWidget):
 
         self.layout.addSpacing(20)
 
-        # Buttons for selecting source and destination
         self.select_source_btn = QPushButton("Select Source Directory")
-        self.select_source_btn.setFixedSize(button_width, 30)  # Set width & height
+        self.select_source_btn.setFixedSize(button_width, 30)
         self.select_source_btn.clicked.connect(self.select_source)
         self.layout.addWidget(self.select_source_btn, alignment=Qt.AlignCenter)
 
@@ -653,30 +703,25 @@ class SymlinkMoverApp(QWidget):
         self.select_destination_btn.clicked.connect(self.select_destination)
         self.layout.addWidget(self.select_destination_btn, alignment=Qt.AlignCenter)
 
-        # Add spacing between "Select Destination Root Directory" and the checkbox
         self.layout.addSpacing(15)
 
         if IS_WINDOWS:
             self.use_robocopy_checkbox = QCheckBox("Use Robocopy for moving files")
             self.layout.addWidget(self.use_robocopy_checkbox, alignment=Qt.AlignCenter)
 
-        # Add spacing between the checkbox and "Start Move & Symlink" button
         self.layout.addSpacing(20)
 
-        # Create Symlink Only Button (Blue Color)
         self.symlink_only_btn = QPushButton("Create Symlink Only (No Move)")
         self.symlink_only_btn.setFixedSize(330, 30)
         self.symlink_only_btn.setStyleSheet(
             "QPushButton { background-color: #1e3a8a; color: white; font-weight: bold; border-radius: 5px; }"
             "QPushButton:hover { background-color: #1d4ed8; }"
         )
-
         self.symlink_only_btn.clicked.connect(self.create_symlink_only)
         self.layout.addWidget(self.symlink_only_btn, alignment=Qt.AlignCenter)
 
         self.layout.addSpacing(20)
 
-        # Start Button (Green Color)
         self.start_btn = QPushButton("Start Move - Create Symlink")
         self.start_btn.setFixedSize(button_width, 30)
         self.start_btn.setStyleSheet(
@@ -689,7 +734,6 @@ class SymlinkMoverApp(QWidget):
         self.preview_checkbox = QCheckBox("Preview Only (Dry Run – no changes)")
         self.layout.addWidget(self.preview_checkbox, alignment=Qt.AlignCenter)
 
-        # Stop Button (Red) - initially hidden
         self.stop_btn = QPushButton("Cancel Transfer")
         self.stop_btn.setFixedSize(button_width, 30)
         self.stop_btn.setStyleSheet(
@@ -700,21 +744,18 @@ class SymlinkMoverApp(QWidget):
         self.stop_btn.hide()
         self.layout.addWidget(self.stop_btn, alignment=Qt.AlignCenter)
 
-        # Progress Bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setAlignment(Qt.AlignCenter)
         self.layout.addWidget(self.progress_bar)
 
-        # Progress Summary Label
         self.progress_summary_label = QLabel("")
         self.progress_summary_label.setAlignment(Qt.AlignCenter)
         self.layout.addWidget(self.progress_summary_label)
 
-        # Progress Bar (Indeterminate Mode)
         self.scan_progress = QProgressBar()
         self.scan_progress.setAlignment(Qt.AlignCenter)
-        self.scan_progress.setRange(0, 0)  # Indeterminate mode
-        self.scan_progress.hide()  # Hidden until scanning starts
+        self.scan_progress.setRange(0, 0)
+        self.scan_progress.hide()
         self.layout.addWidget(self.scan_progress)
 
         self.symlink_instruction = QLabel()
@@ -727,59 +768,32 @@ class SymlinkMoverApp(QWidget):
         self.symlink_instruction.adjustSize()
         self.layout.addWidget(self.symlink_instruction, alignment=Qt.AlignCenter)
 
-        # Set fixed width (match your layout width)
-        self.symlink_instruction.setMinimumWidth(700)
+        self.layout.addSpacing(15)
 
-        # Set the full text
-        self.symlink_instruction.setText(
-            "To check for current symlinks, select a drive and click 'Check Symlinks'.<br>"
-            "<span style='color:#00DD00; font-style:italic;'><b>Note:</b> This check can take some time on a large drive with many directories.</span>"
-        )
-
-        # Force height recalculation
-        self.symlink_instruction.adjustSize()
-
-        # Add to layout
-        self.layout.addWidget(self.symlink_instruction, alignment=Qt.AlignCenter)
-
-
-        # Add spacing between these two elements
-        self.layout.addSpacing(15)  # Adjust number for more/less space
-
-        # Status Label for Live Updates
-        self.scan_status_label = QLabel("Select a drive and click 'Check Symlinks'.")
+        self.scan_status_label = QLabel("Select a drive or folder and click 'Check Symlinks'.")
         self.layout.addWidget(self.scan_status_label, alignment=Qt.AlignCenter)
         
         self.layout.addSpacing(15)
         
-        # Drive Selection for Symlink Checking
         self.drive_selection = QComboBox()
         self.drive_selection.addItems(self.get_available_drives())
         self.layout.addWidget(self.drive_selection, alignment=Qt.AlignCenter)
 
         self.layout.addSpacing(15)
         
-        # Button to Check Symlinks
         self.check_symlinks_btn = QPushButton("Check for Symlinks")
         self.check_symlinks_btn.setFixedSize(button_width, 30)
         self.check_symlinks_btn.clicked.connect(self.start_symlink_check)
         self.layout.addWidget(self.check_symlinks_btn, alignment=Qt.AlignCenter)
 
-        # Symlink Results Output
         self.symlink_results = QTextEdit()
         self.symlink_results.setReadOnly(True)
         self.layout.addWidget(self.symlink_results)
 
-        # Add spacing before the Exit button for better UI spacing
         self.layout.addSpacing(20)
 
-        # Button Row Layout
-        info_log_row = QHBoxLayout()
-
-        # --- Button Row Layout for Info, Help, and Log ---
         button_row = QHBoxLayout()
 
-        # Create all buttons with identical widths
         self.info_btn = QPushButton("Info")
         self.info_btn.setFixedSize(150, 30)
         self.info_btn.clicked.connect(self.show_info_popup)
@@ -792,7 +806,6 @@ class SymlinkMoverApp(QWidget):
         self.view_log_btn.setFixedSize(150, 30)
         self.view_log_btn.clicked.connect(self.show_log_viewer)
 
-        # Add all buttons to the row with spacing
         button_row.addStretch(1)
         button_row.addWidget(self.info_btn)
         button_row.addSpacing(10)
@@ -801,11 +814,9 @@ class SymlinkMoverApp(QWidget):
         button_row.addWidget(self.view_log_btn)
         button_row.addStretch(1)
 
-        # Add to main layout
         self.layout.addLayout(button_row)
         self.layout.addSpacing(20)
         
-        # Exit Button
         self.exit_btn = QPushButton("Exit")
         self.exit_btn.setFixedSize(150, 30)
         self.exit_btn.clicked.connect(self.close)
@@ -815,7 +826,7 @@ class SymlinkMoverApp(QWidget):
       
     def cancel_transfer(self):
         if hasattr(self, 'worker') and self.worker.isRunning():
-            self.transfer_canceled = True  # Mark as canceled
+            self.transfer_canceled = True
             self.worker._stop_requested = True
             self.stop_btn.setEnabled(False)
             self.stop_btn.setText("Cancelling...")
@@ -827,35 +838,25 @@ class SymlinkMoverApp(QWidget):
                 except Exception as e:
                     logging.warning(f"Failed to terminate Robocopy: {e}")
 
-      
     def show_help_popup(self):
-        help_text = r"""
+        help_text = """
         <h2 style='color: #61afef;'>How to Use GameVault-Relocator</h2>
-
-        <!-- Section 1: Core Usage -->
         <ol style='color: white; font-size: 11pt;'>
         <li><b>Select Source Directory:</b><br>Pick the folder you want to move and create a symlink for.</li><br>
         <li><b>Select Destination Root Drive:</b><br>This is where your files will be moved to.<br>
-        For example R:\emulators\rpcs3\games would move to S:\emulators\rpcs3\games. The destination will use the same directory structure as the source directory. 
-        Example #2: R:\LaunchBox\Games\Sega Dreamcast → S:\Launchbox\Games\Sega Dreamcast</li><br>
+        For example R:\\emulators\\rpcs3\\games would move to S:\\emulators\\rpcs3\\games. The destination will use the same directory structure as the source directory. 
+        Example #2: R:\\LaunchBox\\Games\\Sega Dreamcast → S:\\Launchbox\\Games\\Sega Dreamcast</li><br>
         <li><b>Choose 'Start Move - Create Symlink':</b><br>The app will move files and create a symbolic link at the original source location.</li><br>
         <li><b>Or use 'Create Symlink Only (No Move)':</b><br>Use this if you already moved the files manually and just want to link them back.</li><br>
-        <li><b>Check for Symlinks:</b><br>Select a drive and click 'Check for Symlinks' to view all current symbolic links on a drive.</li><br>
+        <li><b>Check for Symlinks:</b><br>Select a drive or Scan by folder and click 'Check for Symlinks' to view all current symbolic links.</li><br>
         <li><b>View Logs:</b><br>Click 'View Log' to see all actions taken and errors (if any).</li><br>
         </ol>
-
-        <!-- Separator -->
         <hr style='border: 1px solid #61afef; margin: 10px 0;'>
-
-        <!-- Title for update instructions -->
         <h3 style='color: #00ffff;'>🛠 To Update on Linux / macOS</h3>
-
-        <!-- Section 2: Linux/Mac Updater -->
         <ol start="1" style='color: white; font-size: 11pt;'>
         <li><b>Make Updater Executable:</b><br><code>chmod +x update.sh</code></li><br>
         <li><b>Run the Updater:</b><br><code>./update.sh /tmp/GameVault-Relocator-v2.1.3 /usr/local/bin/GameVault-Relocator</code></li><br>
         </ol>
-
         <p style='color:#98c379;'>💡 Tip: This tool requires administrator rights to create symlinks on Windows.</p>
         """
 
@@ -897,7 +898,6 @@ class SymlinkMoverApp(QWidget):
 
         layout.addWidget(text_edit)
 
-        # Buttons row
         button_layout = QHBoxLayout()
 
         clear_button = QPushButton("Clear Log")
@@ -917,7 +917,7 @@ class SymlinkMoverApp(QWidget):
             if reply == QMessageBox.Yes:
                 try:
                     open(log_path, 'w').close()
-                    text_edit.setText("")  # Clear display
+                    text_edit.setText("")
                     logging.info("Log file cleared by user.")
                 except Exception as e:
                     QMessageBox.critical(self, "Error", f"Could not clear log file:\n{e}")
@@ -945,7 +945,6 @@ class SymlinkMoverApp(QWidget):
         source_relative_path = source_relative_path.lstrip("\\")
         destination_final_path = os.path.join(self.destination_path, source_relative_path)
 
-        # Ensure destination exists (but we’re not copying files)
         os.makedirs(destination_final_path, exist_ok=True)
 
         if os.path.exists(self.source_path):
@@ -957,7 +956,6 @@ class SymlinkMoverApp(QWidget):
                 QMessageBox.critical(self, "Error", f"Could not remove original source folder:\n{e}")
                 return
 
-        # Create symlink
         try:
             if IS_WINDOWS:
                 cmd = f'mklink /D "{self.source_path}" "{destination_final_path}"'
@@ -988,11 +986,9 @@ class SymlinkMoverApp(QWidget):
 
         background_path = get_resource_path("background.jpg")
 
-        # Main container layout
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Create background QLabel and load scaled image
         bg_label = QLabel(dialog)
         pixmap = QPixmap(background_path).scaled(
             dialog.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
@@ -1001,12 +997,10 @@ class SymlinkMoverApp(QWidget):
         bg_label.setGeometry(0, 0, dialog.width(), dialog.height())
         bg_label.lower()
 
-        # Overlay widget for semi-transparent content
         overlay = QWidget(dialog)
         overlay.setGeometry(0, 0, dialog.width(), dialog.height())
         overlay.setStyleSheet("background-color: rgba(0, 0, 0, 180);")
 
-        # Overlay layout with info text
         overlay_layout = QVBoxLayout(overlay)
         overlay_layout.setContentsMargins(40, 40, 40, 40)
         overlay_layout.setSpacing(20)
@@ -1031,7 +1025,6 @@ class SymlinkMoverApp(QWidget):
         info_label.setStyleSheet("font-size: 11pt;")
         overlay_layout.addWidget(info_label)
 
-        # OK Button
         ok_button = QPushButton("OK")
         ok_button.setFixedSize(100, 30)
         ok_button.setStyleSheet("""
@@ -1051,18 +1044,11 @@ class SymlinkMoverApp(QWidget):
 
         dialog.exec_()
 
-    def get_resource_path(filename):
-        """ Get absolute path to resource, works for dev and for PyInstaller """
-        if hasattr(sys, '_MEIPASS'):
-            return os.path.join(sys._MEIPASS, filename)
-        return os.path.join(os.path.abspath("."), filename)
-
     def center_window(self):
-            """Centers the window on the screen."""
-            frame_geometry = self.frameGeometry()
-            screen_center = QApplication.desktop().screenGeometry().center()
-            frame_geometry.moveCenter(screen_center)
-            self.move(frame_geometry.topLeft())
+        frame_geometry = self.frameGeometry()
+        screen_center = QApplication.desktop().screenGeometry().center()
+        frame_geometry.moveCenter(screen_center)
+        self.move(frame_geometry.topLeft())
 
     def select_source(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Source Directory")
@@ -1080,9 +1066,8 @@ class SymlinkMoverApp(QWidget):
         if not self.source_path or not self.destination_path:
             QMessageBox.warning(self, "Error", "Please select both source and destination directories.")
             return
-        # Clear previous progress summary
         self.progress_summary_label.setText("")
-        # Estimate source size
+        
         def get_folder_size(path):
             total = 0
             for root, _, files in os.walk(path):
@@ -1100,16 +1085,15 @@ class SymlinkMoverApp(QWidget):
             estimated_source_size = get_folder_size(self.source_path)
             destination_free = get_free_space(self.destination_path)
 
-            # 🚨 Compare sizes
             if destination_free < estimated_source_size:
-                source_gb = round(estimated_source_size / (1024**3), 2)
-                dest_gb = round(destination_free / (1024**3), 2)
+                source_gb = round(estimated_source_size / (1024 ** 3), 2)
+                dest_free_gb = round(destination_free / (1024 ** 3), 2)
                 QMessageBox.critical(
                     self,
                     "Insufficient Space",
                     f"The destination drive does not have enough free space.\n\n"
                     f"Estimated size of source: {source_gb} GB\n"
-                    f"Available space on destination: {dest_gb} GB\n\n"
+                    f"Available space on destination: {dest_free_gb} GB\n\n"
                     "Please free up space or choose another destination."
                 )
                 return
@@ -1118,12 +1102,10 @@ class SymlinkMoverApp(QWidget):
             QMessageBox.warning(self, "Drive Space Check Failed", f"Could not verify available space:\n{e}")
             return
 
-        # If space is good, continue with original logic
         source_drive, source_relative_path = os.path.splitdrive(self.source_path)
-        source_relative_path = source_relative_path.lstrip("\\")  # Remove leading backslash
-
+        source_relative_path = source_relative_path.lstrip("\\")
         destination_final_path = os.path.join(self.destination_path, source_relative_path)
-        # Only create the destination dir if it's not a dry run
+
         if not self.preview_checkbox.isChecked():
             os.makedirs(destination_final_path, exist_ok=True)
 
@@ -1131,7 +1113,7 @@ class SymlinkMoverApp(QWidget):
         self.worker = MoveThread(
             self.source_path,
             destination_final_path,
-            self.use_robocopy_checkbox.isChecked(),
+            self.use_robocopy_checkbox.isChecked() if IS_WINDOWS else False,
             self.preview_checkbox.isChecked()
         )
         self.worker.progress.connect(self.progress_bar.setValue)
@@ -1146,39 +1128,30 @@ class SymlinkMoverApp(QWidget):
         self.stop_btn.show()
 
     def on_move_finished(self, message):
-        # logging.info(f"Move finished: {message}")
-        # Hide and reset the Cancel button
         self.stop_btn.hide()
         self.stop_btn.setEnabled(True)
         self.preview_checkbox.setEnabled(True)
         self.stop_btn.setText("Cancel Transfer")
-        # Clear the progress summary label
         self.progress_summary_label.setText("")
         self.start_btn.setEnabled(True)
         
         QMessageBox.information(self, "Process Complete", message)
         
-        # Skip symlink creation if user canceled
         if self.transfer_canceled:
             logging.info("Transfer was canceled. Skipping symlink creation.")
             self.transfer_canceled = False
             return
 
-        # Preview mode check should be here
         if hasattr(self, 'preview_checkbox') and self.preview_checkbox.isChecked():
             logging.info("Preview mode enabled — skipping symlink creation.")
             return
 
-        # Extract relative path from source
         source_drive, source_relative_path = os.path.splitdrive(self.source_path)
         source_relative_path = source_relative_path.lstrip("\\")
-
-        # Create a symbolic link pointing to the new full path
         destination_final_path = os.path.join(self.destination_path, source_relative_path)
 
         logging.info(f"Attempting to create symlink: {self.source_path} -> {destination_final_path}")
 
-        # Ensure the original folder is completely removed before creating the symlink
         if os.path.exists(self.source_path):
             logging.info(f"Source directory still exists, attempting to remove: {self.source_path}")
             
@@ -1192,9 +1165,8 @@ class SymlinkMoverApp(QWidget):
                     f"Could not remove the source directory:\n{self.source_path}\n\n"
                     "Please check if it's open in another program and try again."
                 )
-                return  # Stop execution if the directory can't be removed
+                return
 
-        # Now that the source folder is gone, create the symlink
         if IS_WINDOWS:
             symlink_command = f'mklink /D "{self.source_path}" "{destination_final_path}"'
         else:
@@ -1232,7 +1204,7 @@ class SymlinkMoverApp(QWidget):
             )
     
     def get_available_drives(self):
-        drives = []
+        drives = ["Scan by Folder"]
         
         if IS_WINDOWS:
             for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
@@ -1255,7 +1227,6 @@ class SymlinkMoverApp(QWidget):
                         drives.append(p.mountpoint)
             except Exception as e:
                 logging.warning(f"Fallback: Could not list drives with psutil: {e}")
-                # Fallback directories if psutil fails
                 for base in ["/mnt", "/media", "/Volumes"]:
                     if os.path.exists(base):
                         for item in os.listdir(base):
@@ -1265,27 +1236,37 @@ class SymlinkMoverApp(QWidget):
         return drives
 
     def start_symlink_check(self):
-        selected_drive = self.drive_selection.currentText()
+        selected_item = self.drive_selection.currentText()
+        selected_path = selected_item
+
+        if selected_item == "Scan by Folder":
+            selected_path = QFileDialog.getExistingDirectory(self, "Select Folder to Scan for Symlinks")
+            if not selected_path:
+                self.symlink_results.setText("No folder selected.")
+                self.symlink_instruction.setText(self.base_symlink_instruction)
+                return
+
         self.symlink_results.setText("Scanning for symlinks...\nPlease wait...")
         self.symlink_instruction.setText(
             self.base_symlink_instruction +
-            f"<br><br><span style='color: #61afef;'>Scanning <b>{selected_drive}</b> for symlinks...</span>"
+            f"<br><br><span style='color: #61afef;'>Scanning <b>{selected_path}</b> for symlinks...</span>"
         )
 
         self.check_symlinks_btn.setEnabled(False)
         self.scan_progress.show()
 
-        # Start the background thread for checking symlinks
-        self.worker = SymlinkCheckerThread(selected_drive)
-        self.worker.progress.connect(self.symlink_results.setText)  # Live update
-        self.worker.status.connect(self.scan_status_label.setText)  # Show status
+        self.worker = SymlinkCheckerThread(selected_path)
+        self.worker.progress.connect(self.symlink_results.setText)
+        self.worker.status.connect(self.scan_status_label.setText)
         self.worker.finished.connect(self.on_symlink_check_finished)
         self.worker.start()
 
     def on_symlink_check_finished(self, result):
+        selected_item = self.drive_selection.currentText()
+        display_path = selected_item if selected_item != "Scan by Folder" else self.worker.path
         self.symlink_instruction.setText(
             self.base_symlink_instruction +
-            "<br><br><span style='color: #28a745; font-weight: bold;'>✔ Scan complete!</span>"
+            f"<br><br><span style='color: #28a745; font-weight: bold;'>✔ Scan complete for {display_path}</span>"
         )
 
         self.symlink_results.setText(result)
@@ -1296,19 +1277,15 @@ class SymlinkMoverApp(QWidget):
         return """
             QWidget { background-color: #282c34; color: #abb2bf; font-size: 12pt; }
             QLabel { color: #ffffff; font-weight: bold; }
-            
-            /* Smaller Buttons */
             QPushButton { 
                 background-color: #61afef; 
                 color: black; 
                 border-radius: 4px; 
                 padding: 4px; 
-                font-size: 10pt;  /* Smaller font */
-                min-height: 24px; /* Reduce button height */
+                font-size: 10pt; 
+                min-height: 24px; 
             }
             QPushButton:hover { background-color: #528bbf; }
-
-            /* Green Progress Bar */
             QProgressBar {
                 border: 2px solid #3c4049;
                 border-radius: 5px;
@@ -1318,17 +1295,16 @@ class SymlinkMoverApp(QWidget):
                 color: white;
             }
             QProgressBar::chunk {
-                background-color: #28a745;  /* Green */
+                background-color: #28a745;
                 width: 20px;
             }
-
-            /* Other Elements */
             QCheckBox, QComboBox, QTextEdit { 
                 background-color: #3c4049; 
                 color: #ffffff; 
                 border: 1px solid #61afef; 
             }
         """
+
 if __name__ == "__main__":
     logging.info("GameVault-Relocator starting up...")
     app = QApplication(sys.argv)
@@ -1336,5 +1312,5 @@ if __name__ == "__main__":
     window = SymlinkMoverApp()
     window.show()
     logging.info("GameVault-Relocator GUI initialized and ready.")
-    check_for_updates()  # optional here, or triggered from init
+    check_for_updates()
     sys.exit(app.exec_())
