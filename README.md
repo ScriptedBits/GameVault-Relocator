@@ -14,7 +14,7 @@ We're excited to announce **[GameVault-Relocator](https://github.com/ScriptedBit
 ## Organize. Relocate. Play.
 GameVault-Relocator is a passion project built to solve a real-world challenge: managing and relocating large retro gaming collections—especially those spanning multiple drives. Whether you're organizing arcade ROMs, MAME sets, or curating a LaunchBox or other emulator frontend setup, this tool helps you move games safely while keeping everything linked and playable.
 
-With fast transfers, symlink automation, and built-in checks, it eliminates the hassle of broken paths or manual reconfiguration. Think of it as your library mover, path preserver, and retro game wrangler—all wrapped in a modern PyQt5 GUI.
+With fast transfers, symlink automation, and built-in checks, it eliminates the hassle of broken paths or manual reconfiguration. Think of it as your library mover, path preserver, and retro game wrangler—all wrapped in a modern PyQt6 GUI.
 
 No more broken shortcuts. No more “where did that ROM go?” Just clean, organized, ready-to-play fun.
 ## 🔹 Key Features:
