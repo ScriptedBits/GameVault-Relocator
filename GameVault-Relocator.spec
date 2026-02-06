@@ -1,31 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_submodules
-
-hidden_imports = collect_submodules('PyQt5')
-
-block_cipher = None
-
 a = Analysis(
     ['GameVault-Relocator.py'],
-    pathex=['.'],
+    pathex=[],
     binaries=[],
     datas=[
         ('updater.exe', '.'),         # Include updater.exe
-        ('background.jpg', '.'),      # Include background.jpg in the root of the bundle
+        ('background.jpg', '.'),      # Include background.jpg in the root
     ],
-    hiddenimports=hidden_imports,
+    hiddenimports=[],
     hookspath=[],
+    hooksconfig={},
     runtime_hooks=[],
     excludes=[],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
     noarchive=False,
-    cipher=block_cipher,
     optimize=0,
 )
 
-pyz = PYZ(a.pure, cipher=block_cipher)
+pyz = PYZ(a.pure)  # ← fixed: removed cipher=block_cipher
 
 exe = EXE(
     pyz,
@@ -39,7 +31,13 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
+    upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
-    version='version_info.rc',
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    version='version_info.txt', 
 )

@@ -1,0 +1,33 @@
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(3, 0, 3, 0),
+    prodvers=(3, 0, 3, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,          # Windows NT
+    fileType=0x1,         # Application
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          u'040904B0',
+          [
+            StringStruct(u'CompanyName',        u'ScriptedBits'),
+            StringStruct(u'FileDescription',    u'GameVault-Relocator - Game folder relocator and symlink creator'),
+            StringStruct(u'FileVersion',        u'3.0.3.0'),
+            StringStruct(u'InternalName',       u'GameVault-Relocator'),
+            StringStruct(u'LegalCopyright',     u'Copyright © 2025 ScriptedBits'),
+            StringStruct(u'OriginalFilename',   u'GameVault-Relocator.exe'),
+            StringStruct(u'ProductName',        u'GameVault-Relocator'),
+            StringStruct(u'ProductVersion',     u'3.0.3.0'),
+            StringStruct(u'Comments',           u'Move game folders and create symlinks easily')
+          ]
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct(u'Translation', [1033, 1200])])  # 1033 = English (US), 1200 = UTF-16
+  ]
+)
