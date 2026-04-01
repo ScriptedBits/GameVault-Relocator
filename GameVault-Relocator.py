@@ -33,6 +33,7 @@
 
 import sys
 import os
+import re
 import shutil
 import ctypes
 import subprocess
@@ -55,7 +56,7 @@ from PyQt6.QtGui import QPixmap, QGuiApplication
 if platform.system() == "Windows":
     import win32file
 
-APP_VERSION = "3.0.3"
+APP_VERSION = "3.0.6"
 
 def check_for_updates():
     try:
@@ -151,8 +152,7 @@ def download_and_replace_exe(asset_url, latest_version, parent=None):
     try:
         temp_dir = tempfile.gettempdir()
         new_exe_path = os.path.join(temp_dir, f"GameVault-Relocator-{latest_version}.exe")
-        logging.info(f"Downloading update to temp path: {new_exe_path}")
-        logging.info(f"Downloading from: {asset_url}")
+        logging.info(f"Downloading update to: {new_exe_path}")
 
         response = requests.get(asset_url, stream=True)
         response.raise_for_status()
@@ -164,7 +164,6 @@ def download_and_replace_exe(asset_url, latest_version, parent=None):
         progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         progress_dialog.setWindowTitle("Updating GameVault-Relocator")
         progress_dialog.setMinimumWidth(400)
-        progress_dialog.setAutoClose(True)
         progress_dialog.show()
 
         downloaded = 0
@@ -173,7 +172,7 @@ def download_and_replace_exe(asset_url, latest_version, parent=None):
                 if chunk:
                     f.write(chunk)
                     downloaded += len(chunk)
-                    percent = int(downloaded * 100 / total_size)
+                    percent = int((downloaded * 100) / total_size) if total_size > 0 else 0
                     progress_dialog.setValue(percent)
                     QApplication.processEvents()
                     if progress_dialog.wasCanceled():
@@ -181,15 +180,15 @@ def download_and_replace_exe(asset_url, latest_version, parent=None):
                         QMessageBox.information(parent, "Update Cancelled", "The update has been cancelled.")
                         return
 
-        logging.info("Download complete. Launching updater script.")
+        logging.info("Download complete. Launching updater...")
         
-        QTimer.singleShot(100, lambda: run_updater_script(new_exe_path))
+        # Small delay before launching updater
+        QTimer.singleShot(300, lambda: run_updater_script(new_exe_path))
         QApplication.quit()
 
     except Exception as e:
         logging.error(f"Download or install failed: {e}")
         QMessageBox.warning(parent, "Update Failed", f"Failed to download or install the update:\n{e}")
-
 
 def run_updater_script(new_exe_path):
     current_exe = sys.executable
@@ -204,22 +203,32 @@ def run_updater_script(new_exe_path):
         if not os.path.exists(bundled_updater_path):
             raise FileNotFoundError(f"Missing bundled updater: {bundled_updater_path}")
 
+        # Copy updater to temp directory
         shutil.copyfile(bundled_updater_path, extracted_updater_path)
         logging.info(f"Copied updater to: {extracted_updater_path}")
+
+        # Launch updater with admin rights (it will request UAC if needed)
+        log_msg = f"Launching updater with: {new_exe_path} -> {current_exe}"
+        logging.info(log_msg)
 
         subprocess.Popen(
             [extracted_updater_path, new_exe_path, current_exe],
             shell=False,
-            close_fds=True
+            close_fds=True,
+            creationflags=subprocess.CREATE_NEW_CONSOLE if IS_WINDOWS else 0
         )
 
-        logging.info("Updater launched successfully. Exiting main app.")
+        logging.info("Updater launched successfully. Exiting main application.")
         sys.exit(0)
 
     except Exception as e:
         logging.exception("Failed to launch updater.")
-        QMessageBox.critical(None, "Update Error", f"Could not launch updater:\n{e}")
-
+        QMessageBox.critical(
+            None, 
+            "Update Error", 
+            f"Could not launch the updater:\n\n{str(e)}\n\n"
+            "Please make sure updater.exe is included in the build."
+        )
 
 LOG_FILE = "GameVault-Relocator.log"
 logging.basicConfig(
@@ -361,200 +370,167 @@ class MoveThread(QThread):
                 return
 
             moved_files = 0
-            skipped_files = 0
-            failed_files = 0
             start_time = time.time()
-            total_bytes_moved = 0
-            warnings = []
-        
-            if self.preview_mode:
-                logging.info("Preview mode enabled — no files will be moved.")
-                self.finished.emit(
-                    f"[Preview Mode] Would move {total_files} files from:\n{self.source}\nto\n{self.destination}\n"
-                    f"Total size: {round(sum(os.path.getsize(os.path.join(root, f)) for root, _, files in os.walk(self.source) for f in files) / (1024 ** 3), 2)} GB"
-                )
-                return
+            log_file = None
 
             if getattr(sys, 'frozen', False):
                 log_dir = os.path.dirname(sys.executable)
             else:
                 log_dir = os.path.abspath(".")
 
+            os.makedirs(log_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            log_file = os.path.join(log_dir, f"{'robocopy' if self.use_robocopy else 'move'}_{timestamp}.log")
 
-            if IS_WINDOWS:
-                if self.use_robocopy:
-                    if self.preview_mode:
-                        logging.warning("Preview mode is not supported with Robocopy. Falling back to native Python transfer.")
-                        self.use_robocopy = False
-                    else:
-                        thread_count = get_robocopy_thread_count()
-                        logging.info(f"Using Robocopy with {thread_count} threads")
+            if self.preview_mode:
+                total_size_gb = sum(
+                    os.path.getsize(os.path.join(root, f)) 
+                    for root, _, files in os.walk(self.source) 
+                    for f in files
+                ) / (1024 ** 3)
+                
+                self.finished.emit(
+                    f"[Preview Mode] Would move {total_files} files from:\n"
+                    f"{self.source}\nto\n{self.destination}\n"
+                    f"Total size: {total_size_gb:.2f} GB"
+                )
+                return
 
-                        robocopy_command = [
-                            "robocopy", self.source, self.destination,
-                            "/E", "/MOVE", "/NP", "/R:3", "/W:2",
-                            f"/MT:{thread_count}",
-                            "/LOG:" + log_file
-                        ]
+            # ====================== ROBOCOPY (Primary Path) ======================
+            if IS_WINDOWS and self.use_robocopy:
+                log_file = os.path.join(log_dir, f"robocopy_{timestamp}.log")
+                thread_count = get_robocopy_thread_count()
+                logging.info(f"Using Robocopy with {thread_count} threads")
 
-                        si = subprocess.STARTUPINFO()
-                        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                        si.wShowWindow = subprocess.SW_HIDE
-
-                        self.robocopy_process = subprocess.Popen(
-                            robocopy_command,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            text=True,
-                            startupinfo=si
-                        )
-
-                        while self.robocopy_process.poll() is None:
-                            if self._stop_requested:
-                                self.robocopy_process.terminate()
-                                logging.info("Robocopy Transfer canceled by user request.")
-                                self.finished.emit("Transfer canceled by user.")
-                                return
-
-                            try:
-                                with open(log_file, "r", encoding="mbcs", errors="replace") as f:
-                                    moved_files = 0
-                                    skipped_files = 0
-                                    failed_files = 0
-
-                                    for line in f:
-                                        if "New File" in line or "Moved" in line:
-                                            moved_files += 1
-                                        elif "Skipped" in line:
-                                            skipped_files += 1
-                                        elif "EXTRA File" in line or "Access is denied" in line or "ERROR" in line:
-                                            failed_files += 1
-                            except Exception as e:
-                                logging.warning(f"Could not read Robocopy log during progress check: {e}")
-
-                            progress = int((moved_files / total_files) * 100) if total_files > 0 else 0
-                            self.progress.emit(progress)
-                            self.progress_summary.emit(f"{moved_files}/{total_files} files moved... (Robocopy)")
-                            time.sleep(1)
-
-                        if self._stop_requested:
-                            logging.info("Transfer canceled by user request.")
-                            self.finished.emit("Transfer canceled by user.")
-                            return
-
-                        if self.robocopy_process.returncode >= 8:
-                            self.finished.emit(f"Robocopy failed: See log file at {log_file}")
-                            logging.error(f"Robocopy failed: {log_file}")
-                            return
-
-                        if not self._stop_requested and os.path.exists(self.source):
-                            has_files = any(
-                                os.path.isfile(os.path.join(root, file))
-                                for root, _, files in os.walk(self.source)
-                                for file in files
-                            )
-                            if not has_files:
-                                if IS_WINDOWS:
-                                    os.system(f'rmdir /S /Q "{self.source}"')
-                                else:
-                                    shutil.rmtree(self.source, ignore_errors=True)
-                                logging.info(f"Source directory removed: {self.source}")
-                            else:
-                                logging.warning(f"Skipped removing source directory — files still exist: {self.source}")
-
-                else:
-                    for root, dirs, files in os.walk(self.source, topdown=False):
-                        for file in files:
-                            if self._stop_requested:
-                                self.finished.emit("Transfer canceled by user.")
-                                return
-
-                            src_file = os.path.join(root, file)
-                            dest_file = src_file.replace(self.source, self.destination, 1)
-                            os.makedirs(os.path.dirname(dest_file), exist_ok=True)
-
-                            try:
-                                if self.preview_mode:
-                                    log_line = f"[PREVIEW] Would move: {src_file} -> {dest_file}\n"
-                                    with open(log_file, 'a', encoding='utf-8') as log_f:
-                                        log_f.write(log_line)
-                                    moved_files += 1
-                                    total_bytes_moved += os.path.getsize(src_file)
-                                    continue
-   
-                                file_size = os.path.getsize(src_file) if os.path.exists(src_file) else 0
-
-                                if self.move_with_retries(src_file, dest_file):
-                                    moved_files += 1
-                                    total_bytes_moved += file_size
-                                    with open(log_file, 'a', encoding='utf-8') as log_f:
-                                        log_f.write(f"Moved: {src_file} -> {dest_file}\n")
-                                else:
-                                    failed_files += 1
-                                    warnings.append(f"Failed to move: {src_file}")
-  
-                            except Exception as e:
-                                failed_files += 1
-                                warnings.append(str(e))
-                                logging.error(f"Exception during move: {e}")
-
-                            progress = int((moved_files / total_files) * 100)
-                            self.progress_summary.emit(
-                                f"{moved_files}/{total_files} files {'previewed' if self.preview_mode else 'moved'}"
-                            )
-                            self.progress.emit(progress)
-
-                    if self._stop_requested:
-                        self.finished.emit("Transfer canceled by user.")
-                        return
-
-                    if not self.remove_empty_dirs(self.source):
-                        logging.error(f"Manual deletion required for: {self.source}")
-                        if IS_WINDOWS:
-                            os.system(f'rmdir /S /Q "{self.source}"')
-                        else:
-                            shutil.rmtree(self.source, ignore_errors=True)
-
-            elif IS_LINUX or IS_MAC:
-                rsync_command = [
-                    "rsync", "-a", "--remove-source-files", self.source + "/", self.destination + "/"
+                robocopy_command = [
+                    "robocopy", self.source, self.destination,
+                    "/E", "/MOVE", "/NP", "/R:3", "/W:2",
+                    f"/MT:{thread_count}",
+                    f"/LOG:{log_file}"
                 ]
-                self.rsync_process = subprocess.Popen(
-                    rsync_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = subprocess.SW_HIDE
+
+                self.robocopy_process = subprocess.Popen(
+                    robocopy_command,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    startupinfo=si
                 )
 
-                while self.rsync_process.poll() is None:
+                time.sleep(1.0)  # Give Robocopy time to start writing
+
+                while self.robocopy_process.poll() is None:
                     if self._stop_requested:
-                        self.rsync_process.terminate()
+                        self.robocopy_process.terminate()
                         self.finished.emit("Transfer canceled by user.")
                         return
 
-                    moved_files = self.count_total_files(self.destination)
-                    progress = int((moved_files / total_files) * 100) if total_files > 0 else 0
+                    moved_files = 0
+                    try:
+                        if os.path.exists(log_file):
+                            with open(log_file, "r", encoding="mbcs", errors="replace") as f:
+                                content = f.read()
+                                # Robust counting: count every "New File" occurrence
+                                moved_files = content.count("New File")
+                    except Exception:
+                        pass
+
+                    progress = min(99, int((moved_files / total_files) * 100)) if total_files > 0 else 0
                     self.progress.emit(progress)
-                    time.sleep(1)
+                    self.progress_summary.emit(f"{moved_files}/{total_files} files moved... (Robocopy)")
 
-                subprocess.run(["find", self.source, "-type", "d", "-empty", "-delete"], check=False)
+                    time.sleep(0.7)
 
+                self.robocopy_process.wait()
+
+                if self._stop_requested:
+                    self.finished.emit("Transfer canceled by user.")
+                    return
+
+                # Read final count from the completed log (most accurate)
+                try:
+                    if os.path.exists(log_file):
+                        with open(log_file, "r", encoding="mbcs", errors="replace") as f:
+                            content = f.read()
+                            moved_files = content.count("New File")
+                except Exception:
+                    pass
+
+                # Clean up source if empty
+                if os.path.exists(self.source):
+                    try:
+                        remaining = any(os.path.isfile(os.path.join(r, f)) 
+                                        for r, _, fs in os.walk(self.source) for f in fs)
+                        if not remaining:
+                            os.system(f'rmdir /S /Q "{self.source}"')
+                            logging.info(f"Source directory removed: {self.source}")
+                    except Exception as e:
+                        logging.warning(f"Could not remove source: {e}")
+
+            # ====================== NATIVE PYTHON MOVE (Fallback) ======================
+            else:
+                log_file = os.path.join(log_dir, f"move_{timestamp}.log")
+                moved_files = 0
+                total_bytes_moved = 0
+
+                for root, dirs, files in os.walk(self.source, topdown=False):
+                    if self._stop_requested:
+                        self.finished.emit("Transfer canceled by user.")
+                        return
+
+                    for file in files:
+                        src_file = os.path.join(root, file)
+                        dest_file = src_file.replace(self.source, self.destination, 1)
+                        os.makedirs(os.path.dirname(dest_file), exist_ok=True)
+
+                        try:
+                            file_size = os.path.getsize(src_file) if os.path.exists(src_file) else 0
+                            if self.move_with_retries(src_file, dest_file):
+                                moved_files += 1
+                                total_bytes_moved += file_size
+                            else:
+                                logging.warning(f"Failed to move: {src_file}")
+                        except Exception as e:
+                            logging.error(f"Error moving {src_file}: {e}")
+
+                        progress = int((moved_files / total_files) * 100)
+                        self.progress_summary.emit(f"{moved_files}/{total_files} files moved")
+                        self.progress.emit(progress)
+
+                if not self.remove_empty_dirs(self.source):
+                    logging.error(f"Could not remove empty directories in {self.source}")
+
+            # ====================== FINAL SUMMARY ======================
             elapsed_time = time.time() - start_time
+
+            # Calculate accurate total size from destination
+            try:
+                total_bytes_moved = sum(
+                    os.path.getsize(os.path.join(root, f))
+                    for root, _, files in os.walk(self.destination)
+                    for f in files
+                )
+            except Exception:
+                total_bytes_moved = 0
+
             moved_gb = total_bytes_moved / (1024 ** 3)
 
             self.progress.emit(100)
-            self.finished.emit(
-                f"{'Preview' if self.preview_mode else 'Move'} completed to: {self.destination}\n"
-                f"Files {'previewed' if self.preview_mode else 'moved'}: {moved_files}, "
-                f"Skipped: {skipped_files}, Failed: {failed_files}\n"
-                f"Total GB: {moved_gb:.2f}, Time Taken: {elapsed_time:.2f} seconds\n"
-                f"Warnings/Errors: {len(warnings)}\n"
-                f"Log saved to: {log_file}"
-            )
-        except Exception as e:
-            error_msg = f"Error: {str(e)}"
-            self.finished.emit(error_msg)
-            logging.error(error_msg)
 
+            self.finished.emit(
+                f"Move completed successfully to:\n{self.destination}\n\n"
+                f"Files moved : {moved_files} / {total_files}\n"
+                f"Total size  : {moved_gb:.2f} GB\n"
+                f"Time taken  : {elapsed_time:.2f} seconds\n"
+                f"Log file    : {log_file}"
+            )
+
+        except Exception as e:
+            logging.exception("Error in MoveThread.run()")
+            self.finished.emit(f"Unexpected error during transfer:\n{str(e)}")
+            
     def stop(self):
         self._stop_requested = True
         if self.robocopy_process and self.robocopy_process.poll() is None:
@@ -721,192 +697,205 @@ class SymlinkMoverApp(QWidget):
     def __init__(self):
         super().__init__()
         self.base_symlink_instruction = (
-            "To check for current symlinks, select a drive and click 'Check Symlinks'.<br>"
-            "<span style='color:#00ff88; font-style:italic;'>Note: This check can take some time on a large drive or with folders with many directories.</span>"
+            "Select a drive/folder and click <b>Check for Symlinks</b> to scan."
         )
         self.transfer_canceled = False
         self.source_path = None
         self.destination_path = None
 
         self.setWindowTitle(f"GameVault-Relocator v{APP_VERSION}")
-        self.setGeometry(100, 100, 750, 800)
+        self.setGeometry(100, 100, 780, 700)   # Slightly taller to fit scanner comfortably
         self.center_window()
 
         self.setStyleSheet(self.get_dark_theme())
-        self.layout = QVBoxLayout()
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(15, 15, 15, 15)
 
-        button_width = 400
+        # ==================== PATH SELECTION ====================
+        paths_group = QVBoxLayout()
+        paths_group.setSpacing(8)
 
-        self.source_label = QLabel("Source Directory: Not Selected")
-        self.destination_label = QLabel("Destination: Not Selected")
-        self.layout.addWidget(self.source_label)
-        self.layout.addWidget(self.destination_label)
+        self.source_label = QLabel("Source Directory: <span style='color:#888;'>Not Selected</span>")
+        self.destination_label = QLabel("Destination: <span style='color:#888;'>Not Selected</span>")
+        self.source_label.setWordWrap(True)
+        self.destination_label.setWordWrap(True)
 
-        self.layout.addSpacing(20)
+        paths_group.addWidget(self.source_label)
+        paths_group.addWidget(self.destination_label)
 
-        self.select_source_btn = QPushButton("Select Source Directory")
-        self.select_source_btn.setFixedSize(button_width, 30)
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+
+        self.select_source_btn = QPushButton("📁 Select Source Directory")
+        self.select_source_btn.setMinimumHeight(36)
         self.select_source_btn.clicked.connect(self.select_source)
-        self.layout.addWidget(self.select_source_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        self.select_destination_btn = QPushButton("Select Destination Root / Drive")
-        self.select_destination_btn.setFixedSize(button_width, 30)
+        self.select_destination_btn = QPushButton("📁 Select Destination")
+        self.select_destination_btn.setMinimumHeight(36)
         self.select_destination_btn.clicked.connect(self.select_destination)
-        self.layout.addWidget(self.select_destination_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        self.preserve_structure_cb = QCheckBox("Preserve source folder structure (e.g. E:\\LaunchBox\\Games\\Sony PS2)")
-        self.preserve_structure_cb.setChecked(True)
-        self.preserve_structure_cb.stateChanged.connect(self.toggle_destination_selector)
-        self.layout.addWidget(self.preserve_structure_cb, alignment=Qt.AlignmentFlag.AlignCenter)
+        btn_layout.addWidget(self.select_source_btn)
+        btn_layout.addWidget(self.select_destination_btn)
+
+        paths_group.addLayout(btn_layout)
+        main_layout.addLayout(paths_group)        # ← Add source + buttons here
+
+        # ==================== DESTINATION OPTIONS ====================
+        # Drive selector (shown when Preserve is checked)
+        self.drive_label = QLabel("Destination Drive / Root:")
+        main_layout.addWidget(self.drive_label)
 
         self.drive_combo = QComboBox()
         self.drive_combo.addItems(get_available_drives(exclude_scan=True))
         self.drive_combo.currentTextChanged.connect(self.on_drive_selected)
-        self.drive_combo.setVisible(False)
-        self.drive_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.drive_combo.setMinimumWidth(50)
-        self.layout.addWidget(self.drive_combo, alignment=Qt.AlignmentFlag.AlignCenter)
+        main_layout.addWidget(self.drive_combo)
 
-        self.update_destination_label()
-        self.toggle_destination_selector(Qt.CheckState.Checked.value)
+        # Preserve structure checkbox
+        self.preserve_structure_cb = QCheckBox("Preserve original folder structure")
+        self.preserve_structure_cb.setChecked(True)
+        self.preserve_structure_cb.stateChanged.connect(self.toggle_destination_selector)
+        main_layout.addWidget(self.preserve_structure_cb)
 
-        self.layout.addSpacing(15)
+        # Spacer for visual separation
+        main_layout.addSpacing(10)
+
+        # ==================== OPTIONS ====================
+        options_layout = QHBoxLayout()
+        options_layout.setSpacing(15)
 
         if IS_WINDOWS:
-            self.use_robocopy_checkbox = QCheckBox("Use Robocopy for moving files")
-            self.layout.addWidget(self.use_robocopy_checkbox, alignment=Qt.AlignmentFlag.AlignCenter)
+            self.use_robocopy_checkbox = QCheckBox("Use Robocopy (faster on Windows)")
+            self.use_robocopy_checkbox.setChecked(True)
+            options_layout.addWidget(self.use_robocopy_checkbox)
 
-        self.layout.addSpacing(20)
+        self.preview_checkbox = QCheckBox("Preview Only (Dry Run)")
+        options_layout.addWidget(self.preview_checkbox)
 
-        self.symlink_only_btn = QPushButton("Create Symlink Only (No Move)")
-        self.symlink_only_btn.setFixedSize(330, 30)
-        self.symlink_only_btn.setStyleSheet(
-            "QPushButton { background-color: #1e3a8a; color: white; font-weight: bold; border-radius: 5px; }"
-            "QPushButton:hover { background-color: #1d4ed8; }"
-        )
-        self.symlink_only_btn.clicked.connect(self.create_symlink_only)
-        self.layout.addWidget(self.symlink_only_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        main_layout.addLayout(options_layout)
 
-        self.layout.addSpacing(20)
+        # ==================== ACTION BUTTONS ====================
+        action_layout = QHBoxLayout()
+        action_layout.setSpacing(12)
 
-        self.start_btn = QPushButton("Start Move - Create Symlink")
-        self.start_btn.setFixedSize(button_width, 30)
+        self.start_btn = QPushButton("🚀 Start Move + Create Symlink")
+        self.start_btn.setMinimumHeight(42)
         self.start_btn.setStyleSheet(
-            "QPushButton { background-color: #28a745; color: white; font-weight: bold; border-radius: 5px; }"
+            "QPushButton { background-color: #28a745; font-weight: bold; font-size: 11pt; }"
             "QPushButton:hover { background-color: #218838; }"
         )
         self.start_btn.clicked.connect(self.start_process)
-        self.layout.addWidget(self.start_btn, alignment=Qt.AlignmentFlag.AlignCenter)
-        
-        self.preview_checkbox = QCheckBox("Preview Only (Dry Run – no changes)")
-        self.layout.addWidget(self.preview_checkbox, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        self.stop_btn = QPushButton("Cancel Transfer")
-        self.stop_btn.setFixedSize(button_width, 30)
+        self.symlink_only_btn = QPushButton("🔗 Create Symlink Only")
+        self.symlink_only_btn.setMinimumHeight(42)
+        self.symlink_only_btn.setStyleSheet(
+            "QPushButton { background-color: #1e3a8a; font-weight: bold; }"
+            "QPushButton:hover { background-color: #1d4ed8; }"
+        )
+        self.symlink_only_btn.clicked.connect(self.create_symlink_only)
+
+        action_layout.addWidget(self.start_btn, stretch=1)
+        action_layout.addWidget(self.symlink_only_btn, stretch=1)
+
+        main_layout.addLayout(action_layout)
+
+        self.stop_btn = QPushButton("⏹️ Cancel Transfer")
+        self.stop_btn.setMinimumHeight(36)
         self.stop_btn.setStyleSheet(
-            "QPushButton { background-color: #dc3545; color: white; font-weight: bold; border-radius: 5px; }"
+            "QPushButton { background-color: #dc3545; font-weight: bold; }"
             "QPushButton:hover { background-color: #c82333; }"
         )
         self.stop_btn.clicked.connect(self.cancel_transfer)
         self.stop_btn.hide()
-        self.layout.addWidget(self.stop_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        main_layout.addWidget(self.stop_btn)
 
+        # Progress
         self.progress_bar = QProgressBar()
-        self.progress_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.layout.addWidget(self.progress_bar)
+        self.progress_bar.setMinimumHeight(20)
+        self.progress_bar.setTextVisible(True)
+        main_layout.addWidget(self.progress_bar)
 
         self.progress_summary_label = QLabel("")
         self.progress_summary_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.layout.addWidget(self.progress_summary_label)
+        main_layout.addWidget(self.progress_summary_label)
 
-        self.scan_progress = QProgressBar()
-        self.scan_progress.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.scan_progress.setRange(0, 0)
-        self.scan_progress.hide()
-        self.layout.addWidget(self.scan_progress)
+        # ==================== SYMLINK SCANNER SECTION ====================
+        main_layout.addSpacing(15)
+        main_layout.addWidget(QLabel("<b>Symlink Scanner</b>"))
 
-        self.symlink_instruction = QLabel()
-        self.symlink_instruction.setTextFormat(Qt.TextFormat.RichText)
-        self.symlink_instruction.setWordWrap(True)
-        self.symlink_instruction.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.symlink_instruction.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        self.symlink_instruction.setMinimumWidth(700)
-        self.symlink_instruction.setText(self.base_symlink_instruction)
-        self.symlink_instruction.adjustSize()
-        self.layout.addWidget(self.symlink_instruction, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        self.layout.addSpacing(15)
-
-        self.scan_status_label = QLabel("Select a drive and click 'Check Symlinks'.")
-        self.layout.addWidget(self.scan_status_label, alignment=Qt.AlignmentFlag.AlignCenter)
-        
-        self.layout.addSpacing(15)
-        
+        scan_layout = QHBoxLayout()
         self.drive_selection = QComboBox()
         self.drive_selection.addItems(get_available_drives(exclude_scan=False))
-        self.layout.addWidget(self.drive_selection, alignment=Qt.AlignmentFlag.AlignCenter)
+        scan_layout.addWidget(self.drive_selection, stretch=1)
 
-        self.layout.addSpacing(15)
-        
-        self.check_symlinks_btn = QPushButton("Check for Symlinks")
-        self.check_symlinks_btn.setFixedSize(button_width, 30)
+        self.check_symlinks_btn = QPushButton("🔍 Check for Symlinks")
+        self.check_symlinks_btn.setMinimumHeight(36)
         self.check_symlinks_btn.clicked.connect(self.start_symlink_check)
-        self.layout.addWidget(self.check_symlinks_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        scan_layout.addWidget(self.check_symlinks_btn)
+
+        main_layout.addLayout(scan_layout)
+
+        # === MISSING WIDGETS ADDED HERE ===
+        self.symlink_instruction = QLabel(self.base_symlink_instruction)
+        self.symlink_instruction.setTextFormat(Qt.TextFormat.RichText)
+        self.symlink_instruction.setWordWrap(True)
+        main_layout.addWidget(self.symlink_instruction)
+
+        self.scan_progress = QProgressBar()
+        self.scan_progress.setRange(0, 0)          # Indeterminate (spinning)
+        self.scan_progress.setMaximumHeight(8)
+        self.scan_progress.hide()
+        main_layout.addWidget(self.scan_progress)
 
         self.symlink_results = QTextEdit()
         self.symlink_results.setReadOnly(True)
-        self.layout.addWidget(self.symlink_results)
+        self.symlink_results.setMaximumHeight(160)
+        main_layout.addWidget(self.symlink_results)
 
-        self.layout.addSpacing(20)
+        # ==================== BOTTOM BUTTONS ====================
+        bottom_layout = QHBoxLayout()
+        bottom_layout.setSpacing(10)
 
-        button_row = QHBoxLayout()
-
-        self.info_btn = QPushButton("Info")
-        self.info_btn.setFixedSize(150, 30)
-        self.info_btn.clicked.connect(self.show_info_popup)
-
-        self.help_btn = QPushButton("Help")
-        self.help_btn.setFixedSize(150, 30)
-        self.help_btn.clicked.connect(self.show_help_popup)
-
-        self.view_log_btn = QPushButton("View Log")
-        self.view_log_btn.setFixedSize(150, 30)
-        self.view_log_btn.clicked.connect(self.show_log_viewer)
-
-        button_row.addStretch(1)
-        button_row.addWidget(self.info_btn)
-        button_row.addSpacing(10)
-        button_row.addWidget(self.help_btn)
-        button_row.addSpacing(10)
-        button_row.addWidget(self.view_log_btn)
-        button_row.addStretch(1)
-
-        self.layout.addLayout(button_row)
-        self.layout.addSpacing(20)
-        
+        self.info_btn = QPushButton("ℹ️ Info")
+        self.help_btn = QPushButton("❓ Help")
+        self.view_log_btn = QPushButton("📋 View Log")
         self.exit_btn = QPushButton("Exit")
-        self.exit_btn.setFixedSize(150, 30)
-        self.exit_btn.clicked.connect(self.close)
-        self.layout.addWidget(self.exit_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        self.setLayout(self.layout)
+        for btn in (self.info_btn, self.help_btn, self.view_log_btn, self.exit_btn):
+            btn.setMinimumHeight(34)
+            bottom_layout.addWidget(btn)
+
+        self.info_btn.clicked.connect(self.show_info_popup)
+        self.help_btn.clicked.connect(self.show_help_popup)
+        self.view_log_btn.clicked.connect(self.show_log_viewer)
+        self.exit_btn.clicked.connect(self.close)
+
+        main_layout.addLayout(bottom_layout)
+
+        self.setLayout(main_layout)
+
+        self.update_destination_label()
+        self.toggle_destination_selector(Qt.CheckState.Checked.value)
 
 
     def toggle_destination_selector(self, state):
         preserve = (state == Qt.CheckState.Checked.value)
 
-        self.select_destination_btn.setVisible(not preserve)
+        # Show drive selector + label only when "Preserve" is checked
+        self.drive_label.setVisible(preserve)
         self.drive_combo.setVisible(preserve)
+
+        # Show "Select Destination" button only when Preserve is UNchecked
+        self.select_destination_btn.setVisible(not preserve)
 
         if preserve:
             self.select_destination_btn.setText("Select Destination Root / Drive")
-            # Auto-select first drive if nothing set yet
-            if self.drive_combo.count() > 0 and not self.destination_path:
+            # Auto-select first drive if nothing is set yet
+            if self.drive_combo.count() > 0 and not getattr(self, 'destination_path', None):
                 self.on_drive_selected(self.drive_combo.currentText())
         else:
             self.select_destination_btn.setText("Select Exact Destination Folder")
             self.destination_label.setText("Exact Destination Folder: Not Selected")
-
 
     def on_drive_selected(self, text):
         if self.preserve_structure_cb.isChecked():
@@ -1108,7 +1097,34 @@ class SymlinkMoverApp(QWidget):
         else:
             destination_final_path = os.path.join(self.destination_path, source_basename)
 
-        os.makedirs(destination_final_path, exist_ok=True)
+        # Confirm the user has already moved their files and understands the source will be deleted
+        reply = QMessageBox.warning(
+            self,
+            "Confirm Symlink Only",
+            f"This will:\n\n"
+            f"  1. DELETE the source folder:\n     {self.source_path}\n\n"
+            f"  2. Create a symlink pointing to:\n     {destination_final_path}\n\n"
+            f"Your files must already be at the destination before continuing.\n"
+            f"If your files are NOT there yet, click No and use 'Start Move' instead.\n\n"
+            f"Have you already moved your files to the destination?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            logging.info("User cancelled symlink-only operation at confirmation prompt.")
+            return
+
+        # Verify the destination exists and has content before touching the source
+        if not os.path.isdir(destination_final_path) or not os.listdir(destination_final_path):
+            QMessageBox.critical(
+                self,
+                "Destination Not Found or Empty",
+                f"The destination folder does not exist or is empty:\n\n{destination_final_path}\n\n"
+                f"Please move your files there first, then try again.\n"
+                f"Your source folder has NOT been modified."
+            )
+            logging.warning(f"Symlink-only aborted — destination missing or empty: {destination_final_path}")
+            return
 
         if os.path.exists(self.source_path):
             try:
@@ -1152,33 +1168,34 @@ class SymlinkMoverApp(QWidget):
                 except Exception as e:
                     logging.warning(f"Failed to terminate Robocopy: {e}")
 
-
     def start_symlink_check(self):
         selected_item = self.drive_selection.currentText()
-        selected_path = selected_item
-
-        if selected_item == "Scan by Folder":
+        if selected_item == "Scan drive" or not selected_item:
             selected_path = QFileDialog.getExistingDirectory(self, "Select Folder to Scan for Symlinks")
             if not selected_path:
                 self.symlink_results.setText("No folder selected.")
-                self.symlink_instruction.setText(self.base_symlink_instruction)
                 return
+        else:
+            selected_path = selected_item
 
-        self.symlink_results.setText("Scanning for symlinks...\nPlease wait...")
+        self.symlink_results.setText("Scanning for symlinks...\nThis may take a while on large drives...")
         self.symlink_instruction.setText(
             self.base_symlink_instruction +
-            f"<br><br><span style='color: #61afef;'>Scanning <b>{selected_path}</b> for symlinks...</span>"
+            f"<br><br><span style='color: #61afef;'>Scanning <b>{selected_path}</b>...</span>"
         )
 
         self.check_symlinks_btn.setEnabled(False)
         self.scan_progress.show()
 
-        self.worker = SymlinkCheckerThread(selected_path)
-        self.worker.progress.connect(self.symlink_results.setText)
-        self.worker.status.connect(self.scan_status_label.setText)
-        self.worker.finished.connect(self.on_symlink_check_finished)
-        self.worker.start()
-
+        try:
+            self.worker = SymlinkCheckerThread(selected_path)
+            self.worker.progress.connect(self.symlink_results.setText)
+            self.worker.finished.connect(self.on_symlink_check_finished)
+            self.worker.start()
+        except Exception as e:
+            self.symlink_results.setText(f"Failed to start scan:\n{str(e)}")
+            self.check_symlinks_btn.setEnabled(True)
+            self.scan_progress.hide()
 
     def on_symlink_check_finished(self, result):
         selected_item = self.drive_selection.currentText()
