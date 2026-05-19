@@ -1,0 +1,15 @@
+2026-05-19 06:05:52,382 - INFO - Log file cleared by user.
+2026-05-19 06:06:02,009 - INFO - Starting count on: C:/net_dwn/testing/testprogress
+2026-05-19 06:06:02,906 - INFO - Counting finished - Files: 163 | Size: 9.36 GB
+2026-05-19 06:06:02,908 - INFO - Passing to MoveThread - Files: 163 | GB: 9.36
+2026-05-19 06:06:02,909 - INFO - Preview mode - Using total_bytes = 10,048,575,973 \u2192 9.36 GB
+2026-05-19 06:06:09,263 - INFO - Preview mode enabled — skipping symlink creation.
+2026-05-19 06:06:17,396 - INFO - Starting symlink scan on path: C:/
+2026-05-19 06:06:17,479 - INFO - Found symlink: C:\net_dwn\testing\testprogress \u2192 Q:\net_dwn\testing\testprogress
+2026-05-19 06:06:17,532 - INFO - Found symlink: C:\Program Files\AutoHotkey\v2\AutoHotkey.exe \u2192 AutoHotkey64.exe
+2026-05-19 06:18:01,971 - INFO - GameVault-Relocator starting up...
+2026-05-19 06:18:02,332 - INFO - GameVault-Relocator GUI initialized and ready.
+2026-05-19 06:18:02,332 - INFO - Checking for updates...
+2026-05-19 06:18:02,332 - INFO - Current version: 3.1.3
+2026-05-19 06:18:02,532 - INFO - Latest GitHub release version: 3.0.6
+2026-05-19 06:18:02,532 - INFO - No update available.
